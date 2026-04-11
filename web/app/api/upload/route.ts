@@ -5,12 +5,8 @@ export async function POST(req: NextRequest) {
   // Auth check
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-  const expected = process.env.UPLOAD_BEARER_TOKEN ?? ''
-  if (!token || token !== expected) {
-    return NextResponse.json({
-      error: 'Unauthorized',
-      debug: { tokenLen: token.length, expectedLen: expected.length, envSet: !!expected }
-    }, { status: 401 })
+  if (!token || token !== process.env.UPLOAD_BEARER_TOKEN) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   const formData = await req.formData()
