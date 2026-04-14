@@ -14,6 +14,8 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  const exists = (data ?? []).some((f) => f.name === name)
-  return NextResponse.json({ name, exists })
+  // pliki sa zapisywane z prefiksem timestamp: "1234567890_nazwa.json"
+  // szukamy po dokladnej nazwie lub po suffixie
+  const match = (data ?? []).find((f) => f.name === name || f.name.endsWith(`_${name}`))
+  return NextResponse.json({ name, exists: !!match, storedAs: match?.name ?? null })
 }
