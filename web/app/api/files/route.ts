@@ -11,17 +11,19 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  const files = (data ?? []).map((item) => {
-    const { data: urlData } = supabaseAdmin.storage.from(BUCKET).getPublicUrl(item.name)
-    const ext = item.name.split('.').pop()?.toLowerCase()
-    return {
-      name: item.name,
-      url: urlData.publicUrl,
-      type: ext === 'json' ? 'json' : ext === 'gltf' || ext === 'glb' ? 'gltf' : 'other',
-      size: item.metadata?.size ?? null,
-      createdAt: item.created_at,
-    }
-  })
+  const files = (data ?? [])
+    .filter((item) => !item.name.toLowerCase().endsWith('.bin'))
+    .map((item) => {
+      const { data: urlData } = supabaseAdmin.storage.from(BUCKET).getPublicUrl(item.name)
+      const ext = item.name.split('.').pop()?.toLowerCase()
+      return {
+        name: item.name,
+        url: urlData.publicUrl,
+        type: ext === 'json' ? 'json' : ext === 'gltf' || ext === 'glb' ? 'gltf' : 'other',
+        size: item.metadata?.size ?? null,
+        createdAt: item.created_at,
+      }
+    })
 
   return NextResponse.json({ files })
 }
