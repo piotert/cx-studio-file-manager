@@ -14,12 +14,12 @@ interface JsonMaterial {
 }
 
 export interface ThreeGeometryJson {
-  metadata: { formatVersion: number; generatedBy?: string }
+  metadata?: { formatVersion?: number; generatedBy?: string }
   materials?: JsonMaterial[]
   vertices: number[]
-  normals: number[]
-  colors: number[]
-  uvs: number[][]
+  normals?: number[]
+  colors?: number[]
+  uvs?: number[][]
   faces: number[]
 }
 
@@ -37,7 +37,7 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
   const HAS_VERTEX_CLR   = 0x80
 
   const verts    = json.vertices
-  const uvSets   = json.uvs ?? []
+  const uvSets   = json.uvs ?? ([] as number[][])
   const nUvSets  = uvSets.length
   const facesArr = json.faces
   const numMats  = Math.max(1, json.materials?.length ?? 1)
@@ -127,11 +127,11 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
     return [new THREE.MeshPhongMaterial({ color: 0x888888, side: THREE.DoubleSide })]
   }
   return json.materials.map((m) => {
-    const [r = 0.8, g = 0.8, b = 0.8]      = m.colorDiffuse  ?? []
-    const [sr = 0.9, sg = 0.9, sb = 0.9]   = m.colorSpecular ?? []
+    const cd = m.colorDiffuse
+    const cs = m.colorSpecular
     return new THREE.MeshPhongMaterial({
-      color:     new THREE.Color(r, g, b),
-      specular:  new THREE.Color(sr, sg, sb),
+      color:     cd ? new THREE.Color(cd[0] ?? 0.8, cd[1] ?? 0.8, cd[2] ?? 0.8) : 0x888888,
+      specular:  cs ? new THREE.Color(cs[0] ?? 0.9, cs[1] ?? 0.9, cs[2] ?? 0.9) : 0xe4e4e4,
       shininess: m.specularCoef ?? 10,
       side:      THREE.DoubleSide,
     })

@@ -6,12 +6,9 @@ import ThreeJsonViewer, { type ThreeGeometryJson } from './ThreeJsonViewer'
 function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   if (typeof data !== 'object' || data === null) return false
   const d = data as Record<string, unknown>
-  const meta = d.metadata as Record<string, unknown> | undefined
-  return (
-    typeof meta?.formatVersion === 'number' &&
-    Array.isArray(d.vertices) &&
-    Array.isArray(d.faces)
-  )
+  // Reject GLTF JSON (has 'asset' / 'scenes')
+  if ('asset' in d || 'scenes' in d) return false
+  return Array.isArray(d.vertices) && Array.isArray(d.faces)
 }
 
 type View = '3d' | 'text'
