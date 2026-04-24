@@ -14,13 +14,17 @@ function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   )
 }
 
+type View = '3d' | 'text'
+
 export default function JsonViewer({ url }: { url: string }) {
   const [data, setData] = useState<unknown>(null)
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<View>('3d')
 
   useEffect(() => {
     setData(null)
     setError(null)
+    setView('3d')
     fetch(url)
       .then((r) => r.json())
       .then(setData)
@@ -31,7 +35,40 @@ export default function JsonViewer({ url }: { url: string }) {
   if (!data) return <p className="text-gray-400">Loading...</p>
 
   if (isThreeGeometryJson(data)) {
-    return <ThreeJsonViewer data={data} />
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2">
+          <button
+            onClick={() => setView('3d')}
+            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+              view === '3d'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            3D
+          </button>
+          <button
+            onClick={() => setView('text')}
+            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+              view === 'text'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            JSON
+          </button>
+        </div>
+
+        {view === '3d' ? (
+          <ThreeJsonViewer data={data} />
+        ) : (
+          <pre className="bg-gray-900 rounded p-4 overflow-auto text-sm text-green-300 max-h-[70vh] whitespace-pre-wrap break-all">
+            {JSON.stringify(data, null, 2)}
+          </pre>
+        )}
+      </div>
+    )
   }
 
   return (
