@@ -37,13 +37,14 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
   const HAS_VERTEX_CLR   = 0x80
 
   const verts    = json.vertices
+  const normals  = json.normals ?? []
   const uvSets   = json.uvs ?? ([] as number[][])
   const nUvSets  = uvSets.length
   const facesArr = json.faces
   const numMats  = Math.max(1, json.materials?.length ?? 1)
 
-  const buckets: { pos: number[]; uv: number[] }[] =
-    Array.from({ length: numMats }, () => ({ pos: [], uv: [] }))
+  const buckets: { pos: number[]; uv: number[]; nrm: number[] }[] =
+    Array.from({ length: numMats }, () => ({ pos: [], uv: [], nrm: [] }))
 
   let i = 0
   while (i < facesArr.length) {
@@ -51,6 +52,7 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
     const isQuad   = !!(type & QUAD)
     const hasMat   = !!(type & HAS_MATERIAL)
     const hasVUv   = !!(type & HAS_VERTEX_UV)
+    const hasFNrm  = !!(type & HAS_FACE_NORMAL)
     const nVerts   = isQuad ? 4 : 3
 
     const vi: number[] = []
@@ -72,7 +74,10 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
       }
     }
 
-    if (type & HAS_FACE_NORMAL) i++
+    // face normal index (one per triangle, applied to all 3 vertices)
+    let faceNormalIdx = 0
+    if (hasFNrm) faceNormalIdx = facesArr[i++]
+
     if (type & HAS_VERTEX_NRM)  i += nVerts
     if (type & HAS_FACE_COLOR)  i++
     if (type & HAS_VERTEX_CLR)  i += nVerts
@@ -95,12 +100,23 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
         } else {
           bucket.uv.push(0, 0)
         }
+
+        // Per-face normal (same for all 3 vertices of the triangle)
+        if (hasFNrm && normals.length > 0) {
+          const ni = faceNormalIdx * 3
+          bucket.nrm.push(
+            ni + 2 < normals.length ? normals[ni]     : 0,
+            ni + 2 < normals.length ? normals[ni + 1] : 0,
+            ni + 2 < normals.length ? normals[ni + 2] : 0,
+          )
+        }
       }
     }
   }
 
   const allPos: number[] = []
   const allUv: number[]  = []
+  const allNrm: number[] = []
   const groups: { start: number; count: number; mat: number }[] = []
   let offset = 0
 
@@ -111,14 +127,22 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
     groups.push({ start: offset, count, mat: m })
     for (let j = 0; j < b.pos.length; j++) allPos.push(b.pos[j])
     for (let j = 0; j < b.uv.length;  j++) allUv.push(b.uv[j])
+    for (let j = 0; j < b.nrm.length; j++) allNrm.push(b.nrm[j])
     offset += count
   }
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3))
   geo.setAttribute('uv',       new THREE.Float32BufferAttribute(allUv, 2))
+
+  // Use per-face normals if available (typ 18), otherwise compute from geometry (typ 10)
+  if (allNrm.length > 0) {
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(allNrm, 3))
+  } else {
+    geo.computeVertexNormals()
+  }
+
   for (const g of groups) geo.addGroup(g.start, g.count, g.mat)
-  geo.computeVertexNormals()
   return geo
 }
 
