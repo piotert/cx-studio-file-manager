@@ -165,6 +165,7 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
 export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [showEdges, setShowEdges] = useState(false)
+  const [showMesh, setShowMesh]   = useState(false)
   const [bgColor, setBgColor] = useState<'dark' | 'light' | 'black' | 'blue' | 'grey'>('dark')
 
   const bgColors = {
@@ -202,6 +203,7 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
     let geometry: THREE.BufferGeometry | null = null
     let materials: THREE.Material[] = []
     let edgesLine: THREE.LineSegments | null = null
+    let meshLine:  THREE.LineSegments | null = null
 
     try {
       geometry  = parseGeometry(data)
@@ -219,7 +221,7 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       controls.update()
       scene.add(mesh)
 
-      // Tessellation edges (wireframe overlay)
+      // Edges: sharp borders only (angle threshold 30°)
       if (showEdges && geometry) {
         const edgesGeom = new THREE.EdgesGeometry(geometry, 30)
         edgesLine = new THREE.LineSegments(
@@ -228,6 +230,17 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
         )
         edgesLine.position.copy(mesh.position)
         scene.add(edgesLine)
+      }
+
+      // Mesh: every triangle edge (full tessellation wireframe)
+      if (showMesh && geometry) {
+        const wireGeom = new THREE.WireframeGeometry(geometry)
+        meshLine = new THREE.LineSegments(
+          wireGeom,
+          new THREE.LineBasicMaterial({ color: 0x00aaff, opacity: 0.4, transparent: true })
+        )
+        meshLine.position.copy(mesh.position)
+        scene.add(meshLine)
       }
     } catch (err) {
       console.error('ThreeJsonViewer parse error:', err)
@@ -250,10 +263,15 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
         const em = edgesLine.material
         Array.isArray(em) ? em.forEach((m) => m.dispose()) : em.dispose()
       }
+      if (meshLine) {
+        meshLine.geometry.dispose()
+        const mm = meshLine.material
+        Array.isArray(mm) ? mm.forEach((m) => m.dispose()) : mm.dispose()
+      }
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
-  }, [data, showEdges, bgColor])
+  }, [data, showEdges, showMesh, bgColor])
 
   return (
     <div className="flex flex-col gap-2">
@@ -267,6 +285,16 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
           }`}
         >
           Edges
+        </button>
+        <button
+          onClick={() => setShowMesh(!showMesh)}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            showMesh
+              ? 'bg-cyan-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          Mesh
         </button>
 
         <div className="border-l border-gray-600" />
