@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
@@ -164,6 +164,7 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
 
 export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
   const mountRef = useRef<HTMLDivElement>(null)
+  const [showEdges, setShowEdges] = useState(false)
 
   useEffect(() => {
     const mount = mountRef.current
@@ -191,6 +192,7 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
 
     let geometry: THREE.BufferGeometry | null = null
     let materials: THREE.Material[] = []
+    let edgesLine: THREE.LineSegments | null = null
 
     try {
       geometry  = parseGeometry(data)
@@ -207,6 +209,17 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       controls.target.set(0, 0, 0)
       controls.update()
       scene.add(mesh)
+
+      // Tessellation edges (wireframe overlay)
+      if (showEdges && geometry) {
+        const edges = new THREE.WireframeGeometry(geometry)
+        edgesLine = new THREE.LineSegments(
+          edges,
+          new THREE.LineBasicMaterial({ color: 0x666666, linewidth: 1 })
+        )
+        edgesLine.position.copy(mesh.position)
+        scene.add(edgesLine)
+      }
     } catch (err) {
       console.error('ThreeJsonViewer parse error:', err)
     }
@@ -223,10 +236,28 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       cancelAnimationFrame(animId)
       geometry?.dispose()
       materials.forEach((m) => m.dispose())
+      edgesLine?.geometry.dispose()
+      edgesLine?.material.dispose()
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
-  }, [data])
+  }, [data, showEdges])
 
-  return <div ref={mountRef} className="w-full rounded overflow-hidden" style={{ height: 500 }} />
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+        <button
+          onClick={() => setShowEdges(!showEdges)}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            showEdges
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          Edges
+        </button>
+      </div>
+      <div ref={mountRef} className="w-full rounded overflow-hidden" style={{ height: 500 }} />
+    </div>
+  )
 }
