@@ -245,8 +245,11 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       cancelAnimationFrame(animId)
       geometry?.dispose()
       materials.forEach((m) => m.dispose())
-      edgesLine?.geometry.dispose()
-      edgesLine?.material.dispose()
+      if (edgesLine) {
+        edgesLine.geometry.dispose()
+        const em = edgesLine.material
+        Array.isArray(em) ? em.forEach((m) => m.dispose()) : em.dispose()
+      }
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
