@@ -165,6 +165,15 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
 export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [showEdges, setShowEdges] = useState(false)
+  const [bgColor, setBgColor] = useState<'dark' | 'light' | 'black' | 'blue' | 'grey'>('dark')
+
+  const bgColors = {
+    dark: 0x1a1a2e,
+    light: 0xf0f0f0,
+    black: 0x000000,
+    blue: 0x1a2a4e,
+    grey: 0x2a2a2a,
+  }
 
   useEffect(() => {
     const mount = mountRef.current
@@ -179,7 +188,7 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
     mount.appendChild(renderer.domElement)
 
     const scene  = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1a2e)
+    scene.background = new THREE.Color(bgColors[bgColor])
 
     const camera   = new THREE.PerspectiveCamera(45, width / height, 0.001, 1000)
     const controls = new OrbitControls(camera, renderer.domElement)
@@ -212,10 +221,10 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
 
       // Tessellation edges (wireframe overlay)
       if (showEdges && geometry) {
-        const edges = new THREE.WireframeGeometry(geometry)
+        const edgesGeom = new THREE.EdgesGeometry(geometry, 30)
         edgesLine = new THREE.LineSegments(
-          edges,
-          new THREE.LineBasicMaterial({ color: 0x666666, linewidth: 1 })
+          edgesGeom,
+          new THREE.LineBasicMaterial({ color: 0x999999 })
         )
         edgesLine.position.copy(mesh.position)
         scene.add(edgesLine)
@@ -241,11 +250,11 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
-  }, [data, showEdges])
+  }, [data, showEdges, bgColor])
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex gap-2">
+      <div className="flex gap-1 flex-wrap">
         <button
           onClick={() => setShowEdges(!showEdges)}
           className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
@@ -256,6 +265,22 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
         >
           Edges
         </button>
+
+        <div className="border-l border-gray-600" />
+
+        {(['dark', 'light', 'black', 'blue', 'grey'] as const).map((color) => (
+          <button
+            key={color}
+            onClick={() => setBgColor(color)}
+            className={`px-3 py-1 rounded text-sm font-medium transition-colors capitalize ${
+              bgColor === color
+                ? 'bg-green-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            {color}
+          </button>
+        ))}
       </div>
       <div ref={mountRef} className="w-full rounded overflow-hidden" style={{ height: 500 }} />
     </div>
