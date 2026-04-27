@@ -164,40 +164,46 @@ export default function GltfViewer({ url }: { url: string }) {
   // ── 4. Edges overlay ─────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(edgesRef.current)
-    edgesRef.current  = []
+    edgesRef.current    = []
     edgeMatsRef.current = []
-    if (!loaded || !showEdges) return
+    const scene = sceneRef.current
+    if (!loaded || !showEdges || !scene) return
     const lines: LineSegments2[] = []
     const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
+      mesh.updateWorldMatrix(true, false)
       const src = new THREE.EdgesGeometry(mesh.geometry, 30)
       const el  = makeLineSegments2(src, edgesColor, lineWidth, 1.0, 1, 1)
       src.dispose()
-      mesh.add(el)
+      el.applyMatrix4(mesh.matrixWorld) // world-space position, independent of mesh.visible
+      scene.add(el)
       lines.push(el)
       mats.push(el.material as LineMaterial)
     })
-    edgesRef.current  = lines
+    edgesRef.current    = lines
     edgeMatsRef.current = mats
   }, [loaded, showEdges, edgesColor, lineWidth])
 
   // ── 5. Mesh (full tessellation wireframe) overlay ────────────────────
   useEffect(() => {
     disposeLines(wireRef.current)
-    wireRef.current  = []
+    wireRef.current    = []
     wireMatsRef.current = []
-    if (!loaded || !showMesh) return
+    const scene = sceneRef.current
+    if (!loaded || !showMesh || !scene) return
     const lines: LineSegments2[] = []
     const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
+      mesh.updateWorldMatrix(true, false)
       const src = new THREE.WireframeGeometry(mesh.geometry)
       const wl  = makeLineSegments2(src, meshColor, lineWidth, 0.4, 1, 1)
       src.dispose()
-      mesh.add(wl)
+      wl.applyMatrix4(mesh.matrixWorld)
+      scene.add(wl)
       lines.push(wl)
       mats.push(wl.material as LineMaterial)
     })
-    wireRef.current  = lines
+    wireRef.current    = lines
     wireMatsRef.current = mats
   }, [loaded, showMesh, meshColor, lineWidth])
 
