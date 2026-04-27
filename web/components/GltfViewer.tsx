@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 
 type BgKey = 'dark' | 'light' | 'black' | 'blue' | 'grey'
 
@@ -11,12 +14,30 @@ const BG: Record<BgKey, number> = {
   dark: 0x1a1a2e, light: 0xf0f0f0, black: 0x000000, blue: 0x1a2a4e, grey: 0x2a2a2a,
 }
 
-// Works for lines added either to scene or as mesh children
-function disposeLines(lines: THREE.LineSegments[]) {
+function makeLineSegments2(
+  srcGeom: THREE.BufferGeometry,
+  color: string,
+  lw: number,
+  opacity: number,
+  w: number,
+  h: number,
+): LineSegments2 {
+  const lg = new LineSegmentsGeometry()
+  lg.setPositions(srcGeom.attributes.position.array as Float32Array)
+  const mat = new LineMaterial({
+    color,
+    linewidth: lw,
+    resolution: new THREE.Vector2(w, h),
+    transparent: opacity < 1,
+    opacity,
+  })
+  return new LineSegments2(lg, mat)
+}
+
+function disposeLines(lines: LineSegments2[]) {
   lines.forEach((l) => {
     l.geometry.dispose()
-    const m = l.material
-    Array.isArray(m) ? m.forEach((x) => x.dispose()) : m.dispose()
+    l.material.dispose()
     l.parent?.remove(l)
   })
 }
@@ -25,10 +46,13 @@ export default function GltfViewer({ url }: { url: string }) {
   const mountRef  = useRef<HTMLDivElement>(null)
 
   // Three.js refs — persist across state changes so camera position is preserved
-  const sceneRef  = useRef<THREE.Scene | null>(null)
-  const meshesRef = useRef<THREE.Mesh[]>([])
-  const edgesRef  = useRef<THREE.LineSegments[]>([])
-  const wireRef   = useRef<THREE.LineSegments[]>([])
+  const sceneRef    = useRef<THREE.Scene | null>(null)
+  const meshesRef   = useRef<THREE.Mesh[]>([])
+  const edgesRef    = useRef<LineSegments2[]>([])
+  const wireRef     = useRef<LineSegments2[]>([])
+  // LineMaterial refs for resolution updates in animate loop
+  const edgeMatsRef = useRef<LineMaterial[]>([])
+  const wireMatsRef = useRef<LineMaterial[]>([])
 
   const [loaded,     setLoaded]     = useState(false)
   const [showBody,   setShowBody]   = useState(true)
@@ -36,6 +60,7 @@ export default function GltfViewer({ url }: { url: string }) {
   const [showMesh,   setShowMesh]   = useState(false)
   const [edgesColor, setEdgesColor] = useState('#999999')
   const [meshColor,  setMeshColor]  = useState('#00aaff')
+  const [lineWidth,  setLineWidth]  = useState(1)
   const [bgColor,    setBgColor]    = useState<BgKey>('dark')
 
   // ── 1. Main setup — rebuilds only on URL change ──────────────────────
@@ -101,6 +126,11 @@ export default function GltfViewer({ url }: { url: string }) {
 
     let animId: number
     const animate = () => {
+      // Keep LineMaterial resolution in sync (cheap Vector2 update)
+      const nw = mount.clientWidth
+      const nh = mount.clientHeight
+      edgeMatsRef.current.forEach((m) => m.resolution.set(nw, nh))
+      wireMatsRef.current.forEach((m) => m.resolution.set(nw, nh))
       animId = requestAnimationFrame(animate)
       controls.update()
       renderer.render(scene, camera)
@@ -134,36 +164,42 @@ export default function GltfViewer({ url }: { url: string }) {
   // ── 4. Edges overlay ─────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(edgesRef.current)
-    edgesRef.current = []
+    edgesRef.current  = []
+    edgeMatsRef.current = []
     if (!loaded || !showEdges) return
-    const lines: THREE.LineSegments[] = []
+    const lines: LineSegments2[] = []
+    const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
-      const el = new THREE.LineSegments(
-        new THREE.EdgesGeometry(mesh.geometry, 30),
-        new THREE.LineBasicMaterial({ color: edgesColor }),
-      )
-      mesh.add(el)   // child → inherits mesh transform automatically
+      const src = new THREE.EdgesGeometry(mesh.geometry, 30)
+      const el  = makeLineSegments2(src, edgesColor, lineWidth, 1.0, 1, 1)
+      src.dispose()
+      mesh.add(el)
       lines.push(el)
+      mats.push(el.material as LineMaterial)
     })
-    edgesRef.current = lines
-  }, [loaded, showEdges, edgesColor])
+    edgesRef.current  = lines
+    edgeMatsRef.current = mats
+  }, [loaded, showEdges, edgesColor, lineWidth])
 
   // ── 5. Mesh (full tessellation wireframe) overlay ────────────────────
   useEffect(() => {
     disposeLines(wireRef.current)
-    wireRef.current = []
+    wireRef.current  = []
+    wireMatsRef.current = []
     if (!loaded || !showMesh) return
-    const lines: THREE.LineSegments[] = []
+    const lines: LineSegments2[] = []
+    const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
-      const wl = new THREE.LineSegments(
-        new THREE.WireframeGeometry(mesh.geometry),
-        new THREE.LineBasicMaterial({ color: meshColor, opacity: 0.4, transparent: true }),
-      )
+      const src = new THREE.WireframeGeometry(mesh.geometry)
+      const wl  = makeLineSegments2(src, meshColor, lineWidth, 0.4, 1, 1)
+      src.dispose()
       mesh.add(wl)
       lines.push(wl)
+      mats.push(wl.material as LineMaterial)
     })
-    wireRef.current = lines
-  }, [loaded, showMesh, meshColor])
+    wireRef.current  = lines
+    wireMatsRef.current = mats
+  }, [loaded, showMesh, meshColor, lineWidth])
 
   // ── UI ────────────────────────────────────────────────────────────────
   return (
@@ -221,6 +257,19 @@ export default function GltfViewer({ url }: { url: string }) {
             className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
             title="Mesh color"
           />
+        </div>
+
+        {/* Line width slider */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-gray-400 shrink-0">W</span>
+          <input
+            type="range" min="1" max="6" step="0.5"
+            value={lineWidth}
+            onChange={(e) => setLineWidth(Number(e.target.value))}
+            className="w-20 accent-blue-500"
+            title={`Line width: ${lineWidth}px`}
+          />
+          <span className="text-xs text-gray-500 w-5">{lineWidth}</span>
         </div>
 
         <div className="border-l border-gray-600 self-stretch" />

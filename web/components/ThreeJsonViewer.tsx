@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 
 interface JsonMaterial {
   DbgIndex?: number
@@ -162,6 +165,26 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
   })
 }
 
+function makeLineSegments2(
+  srcGeom: THREE.BufferGeometry,
+  color: string,
+  lw: number,
+  opacity: number,
+  w: number,
+  h: number,
+): LineSegments2 {
+  const lg = new LineSegmentsGeometry()
+  lg.setPositions(srcGeom.attributes.position.array as Float32Array)
+  const mat = new LineMaterial({
+    color,
+    linewidth: lw,
+    resolution: new THREE.Vector2(w, h),
+    transparent: opacity < 1,
+    opacity,
+  })
+  return new LineSegments2(lg, mat)
+}
+
 export default function ThreeJsonViewer({
   data,
   onSwitchToText,
@@ -174,6 +197,7 @@ export default function ThreeJsonViewer({
   const [showMesh,  setShowMesh]  = useState(false)
   const [edgesColor, setEdgesColor] = useState('#999999')
   const [meshColor,  setMeshColor]  = useState('#00aaff')
+  const [lineWidth,  setLineWidth]  = useState(1)
   const [bgColor, setBgColor] = useState<'dark' | 'light' | 'black' | 'blue' | 'grey'>('dark')
 
   const bgColors = {
@@ -191,6 +215,9 @@ export default function ThreeJsonViewer({
     const w0 = mount.clientWidth  || 400
     const h0 = mount.clientHeight || 400
 
+    // All LineMaterials created in this effect run — updated on resize
+    const lineMats: LineMaterial[] = []
+
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(w0, h0)
     renderer.setPixelRatio(window.devicePixelRatio)
@@ -203,7 +230,6 @@ export default function ThreeJsonViewer({
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
 
-    // Resize observer — keeps renderer in sync with container
     const ro = new ResizeObserver(() => {
       const nw = mount.clientWidth
       const nh = mount.clientHeight
@@ -211,6 +237,7 @@ export default function ThreeJsonViewer({
         renderer.setSize(nw, nh)
         camera.aspect = nw / nh
         camera.updateProjectionMatrix()
+        lineMats.forEach((m) => m.resolution.set(nw, nh))
       }
     })
     ro.observe(mount)
@@ -222,8 +249,8 @@ export default function ThreeJsonViewer({
 
     let geometry: THREE.BufferGeometry | null = null
     let materials: THREE.Material[] = []
-    let edgesLine: THREE.LineSegments | null = null
-    let meshLine:  THREE.LineSegments | null = null
+    let edgesLine: LineSegments2 | null = null
+    let meshLine:  LineSegments2 | null = null
 
     try {
       geometry  = parseGeometry(data)
@@ -242,21 +269,19 @@ export default function ThreeJsonViewer({
       scene.add(mesh)
 
       if (showEdges && geometry) {
-        const edgesGeom = new THREE.EdgesGeometry(geometry, 30)
-        edgesLine = new THREE.LineSegments(
-          edgesGeom,
-          new THREE.LineBasicMaterial({ color: edgesColor }),
-        )
+        const src = new THREE.EdgesGeometry(geometry, 30)
+        edgesLine = makeLineSegments2(src, edgesColor, lineWidth, 1.0, w0, h0)
+        src.dispose()
+        lineMats.push(edgesLine.material as LineMaterial)
         edgesLine.position.copy(mesh.position)
         scene.add(edgesLine)
       }
 
       if (showMesh && geometry) {
-        const wireGeom = new THREE.WireframeGeometry(geometry)
-        meshLine = new THREE.LineSegments(
-          wireGeom,
-          new THREE.LineBasicMaterial({ color: meshColor, opacity: 0.4, transparent: true }),
-        )
+        const src = new THREE.WireframeGeometry(geometry)
+        meshLine = makeLineSegments2(src, meshColor, lineWidth, 0.4, w0, h0)
+        src.dispose()
+        lineMats.push(meshLine.material as LineMaterial)
         meshLine.position.copy(mesh.position)
         scene.add(meshLine)
       }
@@ -277,20 +302,13 @@ export default function ThreeJsonViewer({
       cancelAnimationFrame(animId)
       geometry?.dispose()
       materials.forEach((m) => m.dispose())
-      if (edgesLine) {
-        edgesLine.geometry.dispose()
-        const em = edgesLine.material
-        Array.isArray(em) ? em.forEach((m) => m.dispose()) : em.dispose()
-      }
-      if (meshLine) {
-        meshLine.geometry.dispose()
-        const mm = meshLine.material
-        Array.isArray(mm) ? mm.forEach((m) => m.dispose()) : mm.dispose()
-      }
+      lineMats.forEach((m) => m.dispose())
+      edgesLine?.geometry.dispose()
+      meshLine?.geometry.dispose()
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
-  }, [data, showEdges, showMesh, edgesColor, meshColor, bgColor])
+  }, [data, showEdges, showMesh, edgesColor, meshColor, lineWidth, bgColor])
 
   return (
     <div className="h-full flex flex-col">
@@ -345,6 +363,19 @@ export default function ThreeJsonViewer({
             className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
             title="Mesh color"
           />
+        </div>
+
+        {/* Line width slider */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-gray-400 shrink-0">W</span>
+          <input
+            type="range" min="1" max="6" step="0.5"
+            value={lineWidth}
+            onChange={(e) => setLineWidth(Number(e.target.value))}
+            className="w-20 accent-blue-500"
+            title={`Line width: ${lineWidth}px`}
+          />
+          <span className="text-xs text-gray-500 w-5">{lineWidth}</span>
         </div>
 
         <div className="border-l border-gray-600 self-stretch" />
