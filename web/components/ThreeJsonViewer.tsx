@@ -162,38 +162,58 @@ function buildMaterials(json: ThreeGeometryJson): THREE.Material[] {
   })
 }
 
-export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
+export default function ThreeJsonViewer({
+  data,
+  onSwitchToText,
+}: {
+  data: ThreeGeometryJson
+  onSwitchToText?: () => void
+}) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [showEdges, setShowEdges] = useState(false)
-  const [showMesh, setShowMesh]   = useState(false)
+  const [showMesh,  setShowMesh]  = useState(false)
+  const [edgesColor, setEdgesColor] = useState('#999999')
+  const [meshColor,  setMeshColor]  = useState('#00aaff')
   const [bgColor, setBgColor] = useState<'dark' | 'light' | 'black' | 'blue' | 'grey'>('dark')
 
   const bgColors = {
-    dark: 0x1a1a2e,
+    dark:  0x1a1a2e,
     light: 0xf0f0f0,
     black: 0x000000,
-    blue: 0x1a2a4e,
-    grey: 0x2a2a2a,
+    blue:  0x1a2a4e,
+    grey:  0x2a2a2a,
   }
 
   useEffect(() => {
     const mount = mountRef.current
     if (!mount) return
 
-    const width  = mount.clientWidth
-    const height = 500
+    const w0 = mount.clientWidth  || 400
+    const h0 = mount.clientHeight || 400
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setSize(width, height)
+    renderer.setSize(w0, h0)
     renderer.setPixelRatio(window.devicePixelRatio)
     mount.appendChild(renderer.domElement)
 
     const scene  = new THREE.Scene()
     scene.background = new THREE.Color(bgColors[bgColor])
 
-    const camera   = new THREE.PerspectiveCamera(45, width / height, 0.001, 1000)
+    const camera   = new THREE.PerspectiveCamera(45, w0 / h0, 0.001, 1000)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
+
+    // Resize observer — keeps renderer in sync with container
+    const ro = new ResizeObserver(() => {
+      const nw = mount.clientWidth
+      const nh = mount.clientHeight
+      if (nw > 0 && nh > 0) {
+        renderer.setSize(nw, nh)
+        camera.aspect = nw / nh
+        camera.updateProjectionMatrix()
+      }
+    })
+    ro.observe(mount)
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.8))
     const dir = new THREE.DirectionalLight(0xffffff, 1.2)
@@ -221,23 +241,21 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       controls.update()
       scene.add(mesh)
 
-      // Edges: sharp borders only (angle threshold 30°)
       if (showEdges && geometry) {
         const edgesGeom = new THREE.EdgesGeometry(geometry, 30)
         edgesLine = new THREE.LineSegments(
           edgesGeom,
-          new THREE.LineBasicMaterial({ color: 0x999999 })
+          new THREE.LineBasicMaterial({ color: edgesColor }),
         )
         edgesLine.position.copy(mesh.position)
         scene.add(edgesLine)
       }
 
-      // Mesh: every triangle edge (full tessellation wireframe)
       if (showMesh && geometry) {
         const wireGeom = new THREE.WireframeGeometry(geometry)
         meshLine = new THREE.LineSegments(
           wireGeom,
-          new THREE.LineBasicMaterial({ color: 0x00aaff, opacity: 0.4, transparent: true })
+          new THREE.LineBasicMaterial({ color: meshColor, opacity: 0.4, transparent: true }),
         )
         meshLine.position.copy(mesh.position)
         scene.add(meshLine)
@@ -255,6 +273,7 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
     animate()
 
     return () => {
+      ro.disconnect()
       cancelAnimationFrame(animId)
       geometry?.dispose()
       materials.forEach((m) => m.dispose())
@@ -271,49 +290,81 @@ export default function ThreeJsonViewer({ data }: { data: ThreeGeometryJson }) {
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
-  }, [data, showEdges, showMesh, bgColor])
+  }, [data, showEdges, showMesh, edgesColor, meshColor, bgColor])
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex gap-1 flex-wrap">
-        <button
-          onClick={() => setShowEdges(!showEdges)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showEdges
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          Edges
-        </button>
-        <button
-          onClick={() => setShowMesh(!showMesh)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showMesh
-              ? 'bg-cyan-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          Mesh
-        </button>
+    <div className="h-full flex flex-col">
+      {/* Toolbar */}
+      <div className="flex gap-1 flex-wrap items-center p-2 shrink-0 bg-gray-900 border-b border-gray-800">
 
-        <div className="border-l border-gray-600" />
-
-        {(['dark', 'light', 'black', 'blue', 'grey'] as const).map((color) => (
+        {/* Switch to JSON text */}
+        {onSwitchToText && (
           <button
-            key={color}
-            onClick={() => setBgColor(color)}
-            className={`px-3 py-1 rounded text-sm font-medium transition-colors capitalize ${
-              bgColor === color
-                ? 'bg-green-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            onClick={onSwitchToText}
+            className="px-3 py-1 rounded text-sm font-medium bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+          >
+            JSON
+          </button>
+        )}
+
+        <div className="border-l border-gray-600 self-stretch" />
+
+        {/* Edges toggle + color */}
+        <div className="flex items-center">
+          <button
+            onClick={() => setShowEdges(!showEdges)}
+            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
+              showEdges ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
           >
-            {color}
+            Edges
+          </button>
+          <input
+            type="color"
+            value={edgesColor}
+            onChange={(e) => setEdgesColor(e.target.value)}
+            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
+            title="Edges color"
+          />
+        </div>
+
+        {/* Mesh toggle + color */}
+        <div className="flex items-center">
+          <button
+            onClick={() => setShowMesh(!showMesh)}
+            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
+              showMesh ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            Mesh
+          </button>
+          <input
+            type="color"
+            value={meshColor}
+            onChange={(e) => setMeshColor(e.target.value)}
+            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
+            title="Mesh color"
+          />
+        </div>
+
+        <div className="border-l border-gray-600 self-stretch" />
+
+        {/* Background */}
+        {(['dark', 'light', 'black', 'blue', 'grey'] as const).map((c) => (
+          <button
+            key={c}
+            onClick={() => setBgColor(c)}
+            className={`px-2 py-1 rounded text-xs font-medium transition-colors capitalize ${
+              bgColor === c ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            {c}
           </button>
         ))}
       </div>
-      <div ref={mountRef} className="w-full rounded overflow-hidden" style={{ height: 500 }} />
+
+      {/* Canvas */}
+      <div ref={mountRef} className="flex-1 min-h-0 overflow-hidden" />
     </div>
   )
 }

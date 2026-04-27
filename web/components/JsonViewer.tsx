@@ -6,17 +6,14 @@ import ThreeJsonViewer, { type ThreeGeometryJson } from './ThreeJsonViewer'
 function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   if (typeof data !== 'object' || data === null) return false
   const d = data as Record<string, unknown>
-  // Reject GLTF JSON (has 'asset' / 'scenes')
   if ('asset' in d || 'scenes' in d) return false
   return Array.isArray(d.vertices) && Array.isArray(d.faces)
 }
 
-type View = '3d' | 'text'
-
 export default function JsonViewer({ url }: { url: string }) {
-  const [data, setData] = useState<unknown>(null)
+  const [data, setData]   = useState<unknown>(null)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<View>('3d')
+  const [view, setView]   = useState<'3d' | 'text'>('3d')
 
   useEffect(() => {
     setData(null)
@@ -28,49 +25,43 @@ export default function JsonViewer({ url }: { url: string }) {
       .catch(() => setError('Failed to load JSON'))
   }, [url])
 
-  if (error) return <p className="text-red-400">{error}</p>
-  if (!data) return <p className="text-gray-400">Loading...</p>
+  if (error) return <p className="text-red-400 p-4">{error}</p>
+  if (!data)  return <p className="text-gray-400 p-4">Loading…</p>
 
   if (isThreeGeometryJson(data)) {
-    return (
-      <div className="flex flex-col gap-2">
-        <div className="flex gap-2">
-          <button
-            onClick={() => setView('3d')}
-            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-              view === '3d'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            3D
-          </button>
-          <button
-            onClick={() => setView('text')}
-            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-              view === 'text'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            JSON
-          </button>
-        </div>
-
-        {view === '3d' ? (
-          <ThreeJsonViewer data={data} />
-        ) : (
-          <pre className="bg-gray-900 rounded p-4 overflow-auto text-sm text-green-300 max-h-[70vh] whitespace-pre-wrap break-all">
+    if (view === 'text') {
+      return (
+        <div className="h-full flex flex-col">
+          <div className="flex gap-2 p-2 shrink-0 bg-gray-900 border-b border-gray-800">
+            <button
+              onClick={() => setView('3d')}
+              className="px-3 py-1 rounded text-sm font-medium bg-gray-700 text-gray-300 hover:bg-gray-600"
+            >
+              3D
+            </button>
+            <button
+              disabled
+              className="px-3 py-1 rounded text-sm font-medium bg-blue-600 text-white cursor-default"
+            >
+              JSON
+            </button>
+          </div>
+          <pre className="flex-1 overflow-auto p-4 text-sm text-green-300 whitespace-pre-wrap break-all bg-gray-950">
             {JSON.stringify(data, null, 2)}
           </pre>
-        )}
-      </div>
-    )
+        </div>
+      )
+    }
+    // view === '3d'
+    return <ThreeJsonViewer data={data} onSwitchToText={() => setView('text')} />
   }
 
+  // Regular data JSON — scrollable text view
   return (
-    <pre className="bg-gray-900 rounded p-4 overflow-auto text-sm text-green-300 max-h-[70vh] whitespace-pre-wrap break-all">
-      {JSON.stringify(data, null, 2)}
-    </pre>
+    <div className="h-full overflow-auto p-4">
+      <pre className="text-sm text-green-300 whitespace-pre-wrap break-all">
+        {JSON.stringify(data, null, 2)}
+      </pre>
+    </div>
   )
 }
