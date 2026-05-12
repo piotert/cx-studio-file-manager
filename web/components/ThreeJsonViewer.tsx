@@ -6,6 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
+import type { CameraLink } from './GltfViewer'
 
 interface JsonMaterial {
   DbgIndex?: number
@@ -192,9 +193,11 @@ const BG: Record<BgKey, number> = {
 export default function ThreeJsonViewer({
   data,
   onSwitchToText,
+  cameraLink,
 }: {
   data: ThreeGeometryJson
   onSwitchToText?: () => void
+  cameraLink?: CameraLink
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
 
@@ -206,10 +209,15 @@ export default function ThreeJsonViewer({
   const edgeMatsRef = useRef<LineMaterial[]>([])
   const wireMatsRef = useRef<LineMaterial[]>([])
 
+  // Always-current view of the cameraLink prop — read inside effect closures
+  const cameraLinkLive = useRef(cameraLink)
+  useEffect(() => { cameraLinkLive.current = cameraLink }, [cameraLink])
+
   const [loaded,     setLoaded]     = useState(false)
   const [showBody,   setShowBody]   = useState(true)
   const [showEdges,  setShowEdges]  = useState(false)
   const [showMesh,   setShowMesh]   = useState(false)
+  const [showRgb,    setShowRgb]    = useState(false)
   const [edgesColor, setEdgesColor] = useState('#999999')
   const [meshColor,  setMeshColor]  = useState('#00aaff')
   const [lineWidth,  setLineWidth]  = useState(1)
@@ -238,6 +246,21 @@ export default function ThreeJsonViewer({
     const camera   = new THREE.PerspectiveCamera(45, w0 / h0, 0.001, 1000)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
+
+    // Camera sync — broadcast local camera moves to shared state
+    let isRemoteUpdate = false
+    controls.addEventListener('change', () => {
+      if (isRemoteUpdate) return
+      const link = cameraLinkLive.current
+      if (!link) return
+      const s = link.state.current
+      s.px = camera.position.x; s.py = camera.position.y; s.pz = camera.position.z
+      s.qx = camera.quaternion.x; s.qy = camera.quaternion.y
+      s.qz = camera.quaternion.z; s.qw = camera.quaternion.w
+      s.tx = controls.target.x; s.ty = controls.target.y; s.tz = controls.target.z
+      s.version++
+      s.masterId = link.id
+    })
 
     const ro = new ResizeObserver(() => {
       const nw = mount.clientWidth
@@ -277,8 +300,24 @@ export default function ThreeJsonViewer({
       console.error('ThreeJsonViewer parse error:', err)
     }
 
+    let lastAppliedVersion = -1
     let animId: number
     const animate = () => {
+      // Apply remote camera updates (camera sync)
+      const link = cameraLinkLive.current
+      if (link) {
+        const s = link.state.current
+        if (s.masterId !== link.id && s.version > lastAppliedVersion) {
+          lastAppliedVersion = s.version
+          isRemoteUpdate = true
+          camera.position.set(s.px, s.py, s.pz)
+          camera.quaternion.set(s.qx, s.qy, s.qz, s.qw)
+          controls.target.set(s.tx, s.ty, s.tz)
+          controls.update()
+          isRemoteUpdate = false
+        }
+      }
+
       const nw = mount.clientWidth
       const nh = mount.clientHeight
       edgeMatsRef.current.forEach((m) => m.resolution.set(nw, nh))
@@ -349,6 +388,21 @@ export default function ThreeJsonViewer({
     wireMatsRef.current = [wl.material as LineMaterial]
   }, [loaded, showMesh, meshColor, lineWidth])
 
+  // ── 6. RGB (normal-map) shader ────────────────────────────────────────
+  useEffect(() => {
+    const mesh = meshRef.current
+    if (!mesh || !loaded) return
+    if (showRgb) {
+      if (mesh.userData._mat === undefined) mesh.userData._mat = mesh.material
+      mesh.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide })
+    } else {
+      if (mesh.userData._mat !== undefined) {
+        mesh.material = mesh.userData._mat
+        delete mesh.userData._mat
+      }
+    }
+  }, [showRgb, loaded])
+
   // ── UI ────────────────────────────────────────────────────────────────
   return (
     <div className="h-full flex flex-col">
@@ -377,6 +431,17 @@ export default function ThreeJsonViewer({
           title="Show / hide solid mesh"
         >
           Body
+        </button>
+
+        {/* RGB shader */}
+        <button
+          onClick={() => setShowRgb(!showRgb)}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            showRgb ? 'bg-pink-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+          title="Normal-map RGB shader"
+        >
+          RGB
         </button>
 
         <div className="border-l border-gray-600 self-stretch" />

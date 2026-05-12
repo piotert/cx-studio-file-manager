@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import JsonViewer from './JsonViewer'
 import GltfViewer from './GltfViewer'
+import type { CameraLink, CameraState } from './GltfViewer'
 
 type FileItem = {
   name: string
@@ -16,10 +17,10 @@ function displayName(name: string): string {
   return name.replace(/^\d+_/, '')
 }
 
-function FileViewer({ file }: { file: FileItem | null }) {
+function FileViewer({ file, cameraLink }: { file: FileItem | null; cameraLink?: CameraLink }) {
   if (!file) return <p className="text-gray-500 p-4 text-sm">Select a file to preview.</p>
-  if (file.type === 'json') return <JsonViewer url={file.url} />
-  if (file.type === 'gltf') return <GltfViewer url={file.url} />
+  if (file.type === 'json') return <JsonViewer url={file.url} cameraLink={cameraLink} />
+  if (file.type === 'gltf') return <GltfViewer url={file.url} cameraLink={cameraLink} />
   return <p className="text-gray-400 p-4 text-sm">Unsupported file type.</p>
 }
 
@@ -29,9 +30,24 @@ export default function FileList() {
   const [error, setError]     = useState<string | null>(null)
   const [open, setOpen]       = useState(false)
   const [compareMode, setCompareMode] = useState(false)
+  const [cameraLock, setCameraLock]   = useState(false)
   const [selectedA, setSelectedA]     = useState<FileItem | null>(null)
   const [selectedB, setSelectedB]     = useState<FileItem | null>(null)
   const [activeSlot, setActiveSlot]   = useState<'A' | 'B'>('A')
+
+  // Shared camera state — plain mutable object, no re-renders on update
+  // version starts at -1 so neither viewer applies it on mount
+  const sharedCam = useRef<CameraState>({
+    px: 0, py: 0, pz: 0,
+    qx: 0, qy: 0, qz: 0, qw: 1,
+    tx: 0, ty: 0, tz: 0,
+    version: -1,
+    masterId: '',
+  })
+
+  // Stable link objects — created once, never recreated
+  const camLinkA = useRef<CameraLink>({ state: sharedCam, id: 'A' })
+  const camLinkB = useRef<CameraLink>({ state: sharedCam, id: 'B' })
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.innerWidth >= 768) setOpen(true)
@@ -56,8 +72,23 @@ export default function FileList() {
   }
 
   function toggleCompare() {
-    if (compareMode) { setCompareMode(false); setSelectedB(null); setActiveSlot('A') }
-    else             { setCompareMode(true);  setActiveSlot('A') }
+    if (compareMode) {
+      setCompareMode(false); setSelectedB(null); setActiveSlot('A')
+      setCameraLock(false)
+    } else {
+      setCompareMode(true); setActiveSlot('A')
+    }
+  }
+
+  function toggleLock() {
+    if (cameraLock) {
+      // Reset version so cameras don't snap when re-locking later
+      sharedCam.current.version = -1
+      sharedCam.current.masterId = ''
+      setCameraLock(false)
+    } else {
+      setCameraLock(true)
+    }
   }
 
   return (
@@ -77,6 +108,17 @@ export default function FileList() {
             ? `Slot ${activeSlot} — click a file`
             : selectedA ? displayName(selectedA.name) : ''}
         </span>
+        {compareMode && (
+          <button
+            onClick={toggleLock}
+            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors shrink-0 ${
+              cameraLock ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            title={cameraLock ? 'Unlock camera sync' : 'Lock cameras together'}
+          >
+            {cameraLock ? '🔒' : '🔓'}
+          </button>
+        )}
         <button
           onClick={toggleCompare}
           className={`px-2.5 py-1 rounded text-xs font-medium transition-colors shrink-0 ${
@@ -188,7 +230,7 @@ export default function FileList() {
                   </span>
                 </div>
                 <div className="flex-1 min-h-0 overflow-hidden">
-                  <FileViewer file={selectedA} />
+                  <FileViewer file={selectedA} cameraLink={cameraLock ? camLinkA.current : undefined} />
                 </div>
               </div>
               {/* Panel B */}
@@ -200,7 +242,7 @@ export default function FileList() {
                   </span>
                 </div>
                 <div className="flex-1 min-h-0 overflow-hidden">
-                  <FileViewer file={selectedB} />
+                  <FileViewer file={selectedB} cameraLink={cameraLock ? camLinkB.current : undefined} />
                 </div>
               </div>
             </>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import ThreeJsonViewer, { type ThreeGeometryJson } from './ThreeJsonViewer'
+import type { CameraLink } from './GltfViewer'
 
 function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   if (typeof data !== 'object' || data === null) return false
@@ -10,7 +11,7 @@ function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   return Array.isArray(d.vertices) && Array.isArray(d.faces)
 }
 
-export default function JsonViewer({ url }: { url: string }) {
+export default function JsonViewer({ url, cameraLink }: { url: string; cameraLink?: CameraLink }) {
   const [data, setData]   = useState<unknown>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView]   = useState<'3d' | 'text'>('3d')
@@ -53,7 +54,7 @@ export default function JsonViewer({ url }: { url: string }) {
       )
     }
     // view === '3d'
-    return <ThreeJsonViewer data={data} onSwitchToText={() => setView('text')} />
+    return <ThreeJsonViewer data={data} onSwitchToText={() => setView('text')} cameraLink={cameraLink} />
   }
 
   // Regular data JSON — scrollable text view

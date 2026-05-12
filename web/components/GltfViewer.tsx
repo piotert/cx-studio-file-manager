@@ -14,6 +14,19 @@ const BG: Record<BgKey, number> = {
   dark: 0x1a1a2e, light: 0xf0f0f0, black: 0x000000, blue: 0x1a2a4e, grey: 0x2a2a2a,
 }
 
+export type CameraState = {
+  px: number; py: number; pz: number
+  qx: number; qy: number; qz: number; qw: number
+  tx: number; ty: number; tz: number
+  version: number
+  masterId: string
+}
+
+export type CameraLink = {
+  state: { current: CameraState }
+  id: string
+}
+
 function makeLineSegments2(
   srcGeom: THREE.BufferGeometry,
   color: string,
@@ -42,22 +55,32 @@ function disposeLines(lines: LineSegments2[]) {
   })
 }
 
-export default function GltfViewer({ url }: { url: string }) {
-  const mountRef  = useRef<HTMLDivElement>(null)
+export default function GltfViewer({
+  url,
+  cameraLink,
+}: {
+  url: string
+  cameraLink?: CameraLink
+}) {
+  const mountRef = useRef<HTMLDivElement>(null)
 
   // Three.js refs — persist across state changes so camera position is preserved
   const sceneRef    = useRef<THREE.Scene | null>(null)
   const meshesRef   = useRef<THREE.Mesh[]>([])
   const edgesRef    = useRef<LineSegments2[]>([])
   const wireRef     = useRef<LineSegments2[]>([])
-  // LineMaterial refs for resolution updates in animate loop
   const edgeMatsRef = useRef<LineMaterial[]>([])
   const wireMatsRef = useRef<LineMaterial[]>([])
+
+  // Always-current view of the cameraLink prop — read inside effect closures
+  const cameraLinkLive = useRef(cameraLink)
+  useEffect(() => { cameraLinkLive.current = cameraLink }, [cameraLink])
 
   const [loaded,     setLoaded]     = useState(false)
   const [showBody,   setShowBody]   = useState(true)
   const [showEdges,  setShowEdges]  = useState(false)
   const [showMesh,   setShowMesh]   = useState(false)
+  const [showRgb,    setShowRgb]    = useState(false)
   const [edgesColor, setEdgesColor] = useState('#999999')
   const [meshColor,  setMeshColor]  = useState('#00aaff')
   const [lineWidth,  setLineWidth]  = useState(1)
@@ -87,6 +110,21 @@ export default function GltfViewer({ url }: { url: string }) {
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
 
+    // Camera sync — broadcast local camera moves to shared state
+    let isRemoteUpdate = false
+    controls.addEventListener('change', () => {
+      if (isRemoteUpdate) return
+      const link = cameraLinkLive.current
+      if (!link) return
+      const s = link.state.current
+      s.px = camera.position.x; s.py = camera.position.y; s.pz = camera.position.z
+      s.qx = camera.quaternion.x; s.qy = camera.quaternion.y
+      s.qz = camera.quaternion.z; s.qw = camera.quaternion.w
+      s.tx = controls.target.x; s.ty = controls.target.y; s.tz = controls.target.z
+      s.version++
+      s.masterId = link.id
+    })
+
     const ro = new ResizeObserver(() => {
       const nw = mount.clientWidth
       const nh = mount.clientHeight
@@ -114,8 +152,6 @@ export default function GltfViewer({ url }: { url: string }) {
       controls.update()
       scene.add(gltf.scene)
 
-      // Collect meshes — line overlays are added as mesh children
-      // so they automatically inherit the mesh's world transform
       const meshes: THREE.Mesh[] = []
       gltf.scene.traverse((child) => {
         if (child instanceof THREE.Mesh) meshes.push(child)
@@ -124,8 +160,24 @@ export default function GltfViewer({ url }: { url: string }) {
       setLoaded(true)
     })
 
+    let lastAppliedVersion = -1
     let animId: number
     const animate = () => {
+      // Apply remote camera updates (camera sync)
+      const link = cameraLinkLive.current
+      if (link) {
+        const s = link.state.current
+        if (s.masterId !== link.id && s.version > lastAppliedVersion) {
+          lastAppliedVersion = s.version
+          isRemoteUpdate = true
+          camera.position.set(s.px, s.py, s.pz)
+          camera.quaternion.set(s.qx, s.qy, s.qz, s.qw)
+          controls.target.set(s.tx, s.ty, s.tz)
+          controls.update()
+          isRemoteUpdate = false
+        }
+      }
+
       // Keep LineMaterial resolution in sync (cheap Vector2 update)
       const nw = mount.clientWidth
       const nh = mount.clientHeight
@@ -175,7 +227,7 @@ export default function GltfViewer({ url }: { url: string }) {
       const src = new THREE.EdgesGeometry(mesh.geometry, 30)
       const el  = makeLineSegments2(src, edgesColor, lineWidth, 1.0, 1, 1)
       src.dispose()
-      el.applyMatrix4(mesh.matrixWorld) // world-space position, independent of mesh.visible
+      el.applyMatrix4(mesh.matrixWorld)
       scene.add(el)
       lines.push(el)
       mats.push(el.material as LineMaterial)
@@ -207,6 +259,21 @@ export default function GltfViewer({ url }: { url: string }) {
     wireMatsRef.current = mats
   }, [loaded, showMesh, meshColor, lineWidth])
 
+  // ── 6. RGB (normal-map) shader ────────────────────────────────────────
+  useEffect(() => {
+    meshesRef.current.forEach((mesh) => {
+      if (showRgb) {
+        if (mesh.userData._mat === undefined) mesh.userData._mat = mesh.material
+        mesh.material = new THREE.MeshNormalMaterial()
+      } else {
+        if (mesh.userData._mat !== undefined) {
+          mesh.material = mesh.userData._mat
+          delete mesh.userData._mat
+        }
+      }
+    })
+  }, [showRgb, loaded])
+
   // ── UI ────────────────────────────────────────────────────────────────
   return (
     <div className="h-full flex flex-col">
@@ -223,6 +290,17 @@ export default function GltfViewer({ url }: { url: string }) {
           title="Show / hide solid mesh"
         >
           Body
+        </button>
+
+        {/* RGB shader */}
+        <button
+          onClick={() => setShowRgb(!showRgb)}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            showRgb ? 'bg-pink-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+          title="Normal-map RGB shader"
+        >
+          RGB
         </button>
 
         <div className="border-l border-gray-600 self-stretch" />
