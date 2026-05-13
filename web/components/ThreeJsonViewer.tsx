@@ -6,9 +6,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
-import type { CameraLink } from './GltfViewer'
+import type { CameraLink, ViewerSettings } from './GltfViewer'
+import { BG } from './GltfViewer'
 
-interface JsonMaterial {
+export interface JsonMaterial {
   DbgIndex?: number
   DbgName?: string
   colorDiffuse?: number[]
@@ -27,18 +28,18 @@ export interface ThreeGeometryJson {
   faces: number[]
 }
 
-// Parses Three.js legacy geometry format v3 (THREE.JSONLoader format)
+// Three.js legacy geometry format v3 (THREE.JSONLoader format)
 // Face bitmask: bit0=quad, bit1=material, bit2=faceUV, bit3=vertexUV,
 //               bit4=faceNormal, bit5=vertexNormals, bit6=faceColor, bit7=vertexColors
 function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
-  const QUAD             = 0x01
-  const HAS_MATERIAL     = 0x02
-  const HAS_FACE_UV      = 0x04
-  const HAS_VERTEX_UV    = 0x08
-  const HAS_FACE_NORMAL  = 0x10
-  const HAS_VERTEX_NRM   = 0x20
-  const HAS_FACE_COLOR   = 0x40
-  const HAS_VERTEX_CLR   = 0x80
+  const QUAD           = 0x01
+  const HAS_MATERIAL   = 0x02
+  const HAS_FACE_UV    = 0x04
+  const HAS_VERTEX_UV  = 0x08
+  const HAS_FACE_NORMAL = 0x10
+  const HAS_VERTEX_NRM = 0x20
+  const HAS_FACE_COLOR = 0x40
+  const HAS_VERTEX_CLR = 0x80
 
   const verts    = json.vertices
   const normals  = json.normals ?? []
@@ -52,12 +53,12 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
 
   let i = 0
   while (i < facesArr.length) {
-    const type     = facesArr[i++]
-    const isQuad   = !!(type & QUAD)
-    const hasMat   = !!(type & HAS_MATERIAL)
-    const hasVUv   = !!(type & HAS_VERTEX_UV)
-    const hasFNrm  = !!(type & HAS_FACE_NORMAL)
-    const nVerts   = isQuad ? 4 : 3
+    const type    = facesArr[i++]
+    const isQuad  = !!(type & QUAD)
+    const hasMat  = !!(type & HAS_MATERIAL)
+    const hasVUv  = !!(type & HAS_VERTEX_UV)
+    const hasFNrm = !!(type & HAS_FACE_NORMAL)
+    const nVerts  = isQuad ? 4 : 3
 
     const vi: number[] = []
     for (let v = 0; v < nVerts; v++) vi.push(facesArr[i++])
@@ -134,13 +135,11 @@ function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3))
   geo.setAttribute('uv',       new THREE.Float32BufferAttribute(allUv,  2))
-
   if (allNrm.length > 0) {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(allNrm, 3))
   } else {
     geo.computeVertexNormals()
   }
-
   for (const g of groups) geo.addGroup(g.start, g.count, g.mat)
   return geo
 }
@@ -185,23 +184,21 @@ function disposeLines(lines: LineSegments2[]) {
   lines.forEach((l) => { l.geometry.dispose(); l.material.dispose(); l.parent?.remove(l) })
 }
 
-type BgKey = 'dark' | 'light' | 'black' | 'blue' | 'grey'
-const BG: Record<BgKey, number> = {
-  dark: 0x1a1a2e, light: 0xf0f0f0, black: 0x000000, blue: 0x1a2a4e, grey: 0x2a2a2a,
-}
-
 export default function ThreeJsonViewer({
   data,
   onSwitchToText,
   cameraLink,
+  settings,
+  fileName,
 }: {
   data: ThreeGeometryJson
   onSwitchToText?: () => void
   cameraLink?: CameraLink
+  settings: ViewerSettings
+  fileName?: string
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
 
-  // Three.js refs — persist across state changes so camera position is preserved
   const sceneRef    = useRef<THREE.Scene | null>(null)
   const meshRef     = useRef<THREE.Mesh | null>(null)
   const edgesRef    = useRef<LineSegments2[]>([])
@@ -209,21 +206,15 @@ export default function ThreeJsonViewer({
   const edgeMatsRef = useRef<LineMaterial[]>([])
   const wireMatsRef = useRef<LineMaterial[]>([])
 
-  // Always-current view of the cameraLink prop — read inside effect closures
   const cameraLinkLive = useRef(cameraLink)
   useEffect(() => { cameraLinkLive.current = cameraLink }, [cameraLink])
 
-  const [loaded,     setLoaded]     = useState(false)
-  const [showBody,   setShowBody]   = useState(true)
-  const [showEdges,  setShowEdges]  = useState(false)
-  const [showMesh,   setShowMesh]   = useState(false)
-  const [showRgb,    setShowRgb]    = useState(false)
-  const [edgesColor, setEdgesColor] = useState('#999999')
-  const [meshColor,  setMeshColor]  = useState('#00aaff')
-  const [lineWidth,  setLineWidth]  = useState(1)
-  const [bgColor,    setBgColor]    = useState<BgKey>('dark')
+  const settingsRef = useRef(settings)
+  useEffect(() => { settingsRef.current = settings }, [settings])
 
-  // ── 1. Main setup — rebuilds only on data change ────────────────────
+  const [loaded, setLoaded] = useState(false)
+
+  // ── 1. Main setup — rebuilds only on data change ─────────────────────────
   useEffect(() => {
     const mount = mountRef.current
     if (!mount) return
@@ -240,14 +231,13 @@ export default function ThreeJsonViewer({
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(BG[bgColor])
+    scene.background = new THREE.Color(BG[settingsRef.current.bgColor])
     sceneRef.current = scene
 
     const camera   = new THREE.PerspectiveCamera(45, w0 / h0, 0.001, 1000)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
 
-    // Camera sync — broadcast local camera moves to shared state
     let isRemoteUpdate = false
     controls.addEventListener('change', () => {
       if (isRemoteUpdate) return
@@ -303,7 +293,6 @@ export default function ThreeJsonViewer({
     let lastAppliedVersion = -1
     let animId: number
     const animate = () => {
-      // Apply remote camera updates (camera sync)
       const link = cameraLinkLive.current
       if (link) {
         const s = link.state.current
@@ -317,7 +306,6 @@ export default function ThreeJsonViewer({
           isRemoteUpdate = false
         }
       }
-
       const nw = mount.clientWidth
       const nh = mount.clientHeight
       edgeMatsRef.current.forEach((m) => m.resolution.set(nw, nh))
@@ -342,57 +330,57 @@ export default function ThreeJsonViewer({
     }
   }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 2. Background color ───────────────────────────────────────────────
+  // ── 2. Background ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (sceneRef.current) sceneRef.current.background = new THREE.Color(BG[bgColor])
-  }, [bgColor])
+    if (sceneRef.current) sceneRef.current.background = new THREE.Color(BG[settings.bgColor])
+  }, [settings.bgColor])
 
-  // ── 3. Body visibility ────────────────────────────────────────────────
+  // ── 3. Body ───────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (meshRef.current) meshRef.current.visible = showBody
-  }, [showBody, loaded])
+    if (meshRef.current) meshRef.current.visible = settings.showBody
+  }, [settings.showBody, loaded])
 
-  // ── 4. Edges overlay ─────────────────────────────────────────────────
+  // ── 4. Edges overlay ──────────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(edgesRef.current)
     edgesRef.current    = []
     edgeMatsRef.current = []
     const scene = sceneRef.current
     const mesh  = meshRef.current
-    if (!loaded || !showEdges || !scene || !mesh) return
+    if (!loaded || !settings.showEdges || !scene || !mesh) return
     mesh.updateWorldMatrix(true, false)
     const src = new THREE.EdgesGeometry(mesh.geometry, 30)
-    const el  = makeLineSegments2(src, edgesColor, lineWidth, 1.0, 1, 1)
+    const el  = makeLineSegments2(src, settings.edgesColor, settings.lineWidth, 1.0, 1, 1)
     src.dispose()
     el.applyMatrix4(mesh.matrixWorld)
     scene.add(el)
     edgesRef.current    = [el]
     edgeMatsRef.current = [el.material as LineMaterial]
-  }, [loaded, showEdges, edgesColor, lineWidth])
+  }, [loaded, settings.showEdges, settings.edgesColor, settings.lineWidth])
 
-  // ── 5. Mesh (full tessellation wireframe) overlay ────────────────────
+  // ── 5. Wireframe overlay ──────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(wireRef.current)
     wireRef.current    = []
     wireMatsRef.current = []
     const scene = sceneRef.current
     const mesh  = meshRef.current
-    if (!loaded || !showMesh || !scene || !mesh) return
+    if (!loaded || !settings.showMesh || !scene || !mesh) return
     mesh.updateWorldMatrix(true, false)
     const src = new THREE.WireframeGeometry(mesh.geometry)
-    const wl  = makeLineSegments2(src, meshColor, lineWidth, 0.4, 1, 1)
+    const wl  = makeLineSegments2(src, settings.meshColor, settings.lineWidth, 0.4, 1, 1)
     src.dispose()
     wl.applyMatrix4(mesh.matrixWorld)
     scene.add(wl)
     wireRef.current    = [wl]
     wireMatsRef.current = [wl.material as LineMaterial]
-  }, [loaded, showMesh, meshColor, lineWidth])
+  }, [loaded, settings.showMesh, settings.meshColor, settings.lineWidth])
 
-  // ── 6. RGB (normal-map) shader ────────────────────────────────────────
+  // ── 6. RGB shader ─────────────────────────────────────────────────────────
   useEffect(() => {
     const mesh = meshRef.current
     if (!mesh || !loaded) return
-    if (showRgb) {
+    if (settings.showRgb) {
       if (mesh.userData._mat === undefined) mesh.userData._mat = mesh.material
       mesh.material = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide })
     } else {
@@ -401,119 +389,24 @@ export default function ThreeJsonViewer({
         delete mesh.userData._mat
       }
     }
-  }, [showRgb, loaded])
+  }, [settings.showRgb, loaded])
 
-  // ── UI ────────────────────────────────────────────────────────────────
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex gap-1 flex-wrap items-center p-2 shrink-0 bg-gray-900 border-b border-gray-800">
-
-        {/* Switch to JSON text */}
-        {onSwitchToText && (
-          <button
-            onClick={onSwitchToText}
-            className="px-3 py-1 rounded text-sm font-medium bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
-          >
-            JSON
-          </button>
-        )}
-
-        <div className="border-l border-gray-600 self-stretch" />
-
-        {/* Body toggle */}
+    <div className="relative h-full w-full overflow-hidden">
+      {onSwitchToText && (
         <button
-          onClick={() => setShowBody(!showBody)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showBody
-              ? 'bg-gray-600 text-white'
-              : 'bg-gray-700 text-gray-400 line-through hover:bg-gray-600'
-          }`}
-          title="Show / hide solid mesh"
+          onClick={onSwitchToText}
+          className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-gray-800/80 text-gray-300 hover:bg-gray-700/80"
         >
-          Body
+          JSON
         </button>
-
-        {/* RGB shader */}
-        <button
-          onClick={() => setShowRgb(!showRgb)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showRgb ? 'bg-pink-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-          title="Normal-map RGB shader"
-        >
-          RGB
-        </button>
-
-        <div className="border-l border-gray-600 self-stretch" />
-
-        {/* Edges toggle + color */}
-        <div className="flex items-center">
-          <button
-            onClick={() => setShowEdges(!showEdges)}
-            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
-              showEdges ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Edges
-          </button>
-          <input
-            type="color"
-            value={edgesColor}
-            onChange={(e) => setEdgesColor(e.target.value)}
-            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
-            title="Edges color"
-          />
+      )}
+      {fileName && (
+        <div className="absolute top-2 left-2 z-10 text-xs text-white/80 bg-black/50 px-2 py-0.5 rounded pointer-events-none font-mono leading-tight">
+          {fileName}
         </div>
-
-        {/* Mesh toggle + color */}
-        <div className="flex items-center">
-          <button
-            onClick={() => setShowMesh(!showMesh)}
-            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
-              showMesh ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Mesh
-          </button>
-          <input
-            type="color"
-            value={meshColor}
-            onChange={(e) => setMeshColor(e.target.value)}
-            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
-            title="Mesh color"
-          />
-        </div>
-
-        {/* Line width slider */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-gray-400 shrink-0">W</span>
-          <input
-            type="range" min="1" max="6" step="0.5"
-            value={lineWidth}
-            onChange={(e) => setLineWidth(Number(e.target.value))}
-            className="w-20 accent-blue-500"
-            title={`Line width: ${lineWidth}px`}
-          />
-          <span className="text-xs text-gray-500 w-5">{lineWidth}</span>
-        </div>
-
-        <div className="border-l border-gray-600 self-stretch" />
-
-        {/* Background */}
-        {(['dark', 'light', 'black', 'blue', 'grey'] as const).map((c) => (
-          <button
-            key={c}
-            onClick={() => setBgColor(c)}
-            className={`px-2 py-1 rounded text-xs font-medium transition-colors capitalize ${
-              bgColor === c ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
-
-      <div ref={mountRef} className="flex-1 min-h-0 overflow-hidden" />
+      )}
+      <div ref={mountRef} className="h-full w-full" />
     </div>
   )
 }

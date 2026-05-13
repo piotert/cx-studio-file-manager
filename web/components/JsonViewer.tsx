@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import ThreeJsonViewer, { type ThreeGeometryJson } from './ThreeJsonViewer'
-import type { CameraLink } from './GltfViewer'
+import type { CameraLink, ViewerSettings } from './GltfViewer'
 
 function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   if (typeof data !== 'object' || data === null) return false
@@ -11,7 +11,17 @@ function isThreeGeometryJson(data: unknown): data is ThreeGeometryJson {
   return Array.isArray(d.vertices) && Array.isArray(d.faces)
 }
 
-export default function JsonViewer({ url, cameraLink }: { url: string; cameraLink?: CameraLink }) {
+export default function JsonViewer({
+  url,
+  cameraLink,
+  settings,
+  fileName,
+}: {
+  url: string
+  cameraLink?: CameraLink
+  settings: ViewerSettings
+  fileName?: string
+}) {
   const [data, setData]   = useState<unknown>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView]   = useState<'3d' | 'text'>('3d')
@@ -53,11 +63,17 @@ export default function JsonViewer({ url, cameraLink }: { url: string; cameraLin
         </div>
       )
     }
-    // view === '3d'
-    return <ThreeJsonViewer data={data} onSwitchToText={() => setView('text')} cameraLink={cameraLink} />
+    return (
+      <ThreeJsonViewer
+        data={data}
+        onSwitchToText={() => setView('text')}
+        cameraLink={cameraLink}
+        settings={settings}
+        fileName={fileName}
+      />
+    )
   }
 
-  // Regular data JSON — scrollable text view
   return (
     <div className="h-full overflow-auto p-4">
       <pre className="text-sm text-green-300 whitespace-pre-wrap break-all">

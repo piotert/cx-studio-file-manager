@@ -8,11 +8,49 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 
-type BgKey = 'dark' | 'light' | 'black' | 'blue' | 'grey'
+// ── Shared viewer types ───────────────────────────────────────────────────────
 
-const BG: Record<BgKey, number> = {
-  dark: 0x1a1a2e, light: 0xf0f0f0, black: 0x000000, blue: 0x1a2a4e, grey: 0x2a2a2a,
+export type BgKey = 'dark' | 'light' | 'black' | 'blue' | 'grey'
+
+export const BG: Record<BgKey, number> = {
+  dark: 0x1a1a2e, light: 0xf0f0f0, black: 0x000000, blue: 0x0a0f32, grey: 0x2a2a2a,
 }
+
+export type ViewerSettings = {
+  showBody: boolean
+  showEdges: boolean
+  showMesh: boolean
+  showRgb: boolean
+  edgesColor: string
+  meshColor: string
+  lineWidth: number
+  bgColor: BgKey
+}
+
+export const DEFAULT_SETTINGS: ViewerSettings = {
+  showBody: true,
+  showEdges: false,
+  showMesh: false,
+  showRgb: false,
+  edgesColor: '#999999',
+  meshColor: '#00aaff',
+  lineWidth: 1,
+  bgColor: 'dark',
+}
+
+export type Preset = { name: string } & ViewerSettings
+
+export const PRESETS: Preset[] = [
+  { name: 'Blueprint', bgColor: 'blue',  showBody: true,  showEdges: true,  showMesh: false, showRgb: false, edgesColor: '#c8dcff', meshColor: '#4488ff', lineWidth: 1.5 },
+  { name: 'Dark',      bgColor: 'dark',  showBody: true,  showEdges: false, showMesh: false, showRgb: false, edgesColor: '#999999', meshColor: '#00aaff', lineWidth: 1   },
+  { name: 'Light',     bgColor: 'light', showBody: true,  showEdges: false, showMesh: false, showRgb: false, edgesColor: '#666666', meshColor: '#0044aa', lineWidth: 1   },
+  { name: 'Drawing',   bgColor: 'light', showBody: true,  showEdges: true,  showMesh: false, showRgb: false, edgesColor: '#111111', meshColor: '#444444', lineWidth: 1.5 },
+  { name: 'Black',     bgColor: 'black', showBody: true,  showEdges: false, showMesh: false, showRgb: false, edgesColor: '#aaaaaa', meshColor: '#00aaff', lineWidth: 1   },
+  { name: 'X-Ray',     bgColor: 'black', showBody: false, showEdges: true,  showMesh: true,  showRgb: false, edgesColor: '#00ff88', meshColor: '#004422', lineWidth: 1   },
+  { name: 'Normals',   bgColor: 'dark',  showBody: true,  showEdges: false, showMesh: false, showRgb: true,  edgesColor: '#999999', meshColor: '#00aaff', lineWidth: 1   },
+]
+
+// ── Camera sync types ─────────────────────────────────────────────────────────
 
 export type CameraState = {
   px: number; py: number; pz: number
@@ -26,6 +64,8 @@ export type CameraLink = {
   state: { current: CameraState }
   id: string
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeLineSegments2(
   srcGeom: THREE.BufferGeometry,
@@ -55,16 +95,21 @@ function disposeLines(lines: LineSegments2[]) {
   })
 }
 
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function GltfViewer({
   url,
   cameraLink,
+  settings,
+  fileName,
 }: {
   url: string
   cameraLink?: CameraLink
+  settings: ViewerSettings
+  fileName?: string
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
 
-  // Three.js refs — persist across state changes so camera position is preserved
   const sceneRef    = useRef<THREE.Scene | null>(null)
   const meshesRef   = useRef<THREE.Mesh[]>([])
   const edgesRef    = useRef<LineSegments2[]>([])
@@ -72,21 +117,16 @@ export default function GltfViewer({
   const edgeMatsRef = useRef<LineMaterial[]>([])
   const wireMatsRef = useRef<LineMaterial[]>([])
 
-  // Always-current view of the cameraLink prop — read inside effect closures
   const cameraLinkLive = useRef(cameraLink)
   useEffect(() => { cameraLinkLive.current = cameraLink }, [cameraLink])
 
-  const [loaded,     setLoaded]     = useState(false)
-  const [showBody,   setShowBody]   = useState(true)
-  const [showEdges,  setShowEdges]  = useState(false)
-  const [showMesh,   setShowMesh]   = useState(false)
-  const [showRgb,    setShowRgb]    = useState(false)
-  const [edgesColor, setEdgesColor] = useState('#999999')
-  const [meshColor,  setMeshColor]  = useState('#00aaff')
-  const [lineWidth,  setLineWidth]  = useState(1)
-  const [bgColor,    setBgColor]    = useState<BgKey>('dark')
+  // Keep latest settings accessible inside long-lived effect closures
+  const settingsRef = useRef(settings)
+  useEffect(() => { settingsRef.current = settings }, [settings])
 
-  // ── 1. Main setup — rebuilds only on URL change ──────────────────────
+  const [loaded, setLoaded] = useState(false)
+
+  // ── 1. Main setup — rebuilds only on URL change ──────────────────────────
   useEffect(() => {
     const mount = mountRef.current
     if (!mount) return
@@ -103,14 +143,13 @@ export default function GltfViewer({
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(BG[bgColor])
+    scene.background = new THREE.Color(BG[settingsRef.current.bgColor])
     sceneRef.current = scene
 
     const camera   = new THREE.PerspectiveCamera(45, w0 / h0, 0.01, 1000)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
 
-    // Camera sync — broadcast local camera moves to shared state
     let isRemoteUpdate = false
     controls.addEventListener('change', () => {
       if (isRemoteUpdate) return
@@ -163,7 +202,6 @@ export default function GltfViewer({
     let lastAppliedVersion = -1
     let animId: number
     const animate = () => {
-      // Apply remote camera updates (camera sync)
       const link = cameraLinkLive.current
       if (link) {
         const s = link.state.current
@@ -177,8 +215,6 @@ export default function GltfViewer({
           isRemoteUpdate = false
         }
       }
-
-      // Keep LineMaterial resolution in sync (cheap Vector2 update)
       const nw = mount.clientWidth
       const nh = mount.clientHeight
       edgeMatsRef.current.forEach((m) => m.resolution.set(nw, nh))
@@ -203,29 +239,29 @@ export default function GltfViewer({
     }
   }, [url]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 2. Background color ───────────────────────────────────────────────
+  // ── 2. Background color ───────────────────────────────────────────────────
   useEffect(() => {
-    if (sceneRef.current) sceneRef.current.background = new THREE.Color(BG[bgColor])
-  }, [bgColor])
+    if (sceneRef.current) sceneRef.current.background = new THREE.Color(BG[settings.bgColor])
+  }, [settings.bgColor])
 
-  // ── 3. Body visibility ────────────────────────────────────────────────
+  // ── 3. Body visibility ────────────────────────────────────────────────────
   useEffect(() => {
-    meshesRef.current.forEach((m) => { m.visible = showBody })
-  }, [showBody, loaded])
+    meshesRef.current.forEach((m) => { m.visible = settings.showBody })
+  }, [settings.showBody, loaded])
 
-  // ── 4. Edges overlay ─────────────────────────────────────────────────
+  // ── 4. Edges overlay ──────────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(edgesRef.current)
     edgesRef.current    = []
     edgeMatsRef.current = []
     const scene = sceneRef.current
-    if (!loaded || !showEdges || !scene) return
+    if (!loaded || !settings.showEdges || !scene) return
     const lines: LineSegments2[] = []
     const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
       mesh.updateWorldMatrix(true, false)
       const src = new THREE.EdgesGeometry(mesh.geometry, 30)
-      const el  = makeLineSegments2(src, edgesColor, lineWidth, 1.0, 1, 1)
+      const el  = makeLineSegments2(src, settings.edgesColor, settings.lineWidth, 1.0, 1, 1)
       src.dispose()
       el.applyMatrix4(mesh.matrixWorld)
       scene.add(el)
@@ -234,21 +270,21 @@ export default function GltfViewer({
     })
     edgesRef.current    = lines
     edgeMatsRef.current = mats
-  }, [loaded, showEdges, edgesColor, lineWidth])
+  }, [loaded, settings.showEdges, settings.edgesColor, settings.lineWidth])
 
-  // ── 5. Mesh (full tessellation wireframe) overlay ────────────────────
+  // ── 5. Wireframe overlay ──────────────────────────────────────────────────
   useEffect(() => {
     disposeLines(wireRef.current)
     wireRef.current    = []
     wireMatsRef.current = []
     const scene = sceneRef.current
-    if (!loaded || !showMesh || !scene) return
+    if (!loaded || !settings.showMesh || !scene) return
     const lines: LineSegments2[] = []
     const mats:  LineMaterial[]  = []
     meshesRef.current.forEach((mesh) => {
       mesh.updateWorldMatrix(true, false)
       const src = new THREE.WireframeGeometry(mesh.geometry)
-      const wl  = makeLineSegments2(src, meshColor, lineWidth, 0.4, 1, 1)
+      const wl  = makeLineSegments2(src, settings.meshColor, settings.lineWidth, 0.4, 1, 1)
       src.dispose()
       wl.applyMatrix4(mesh.matrixWorld)
       scene.add(wl)
@@ -257,12 +293,12 @@ export default function GltfViewer({
     })
     wireRef.current    = lines
     wireMatsRef.current = mats
-  }, [loaded, showMesh, meshColor, lineWidth])
+  }, [loaded, settings.showMesh, settings.meshColor, settings.lineWidth])
 
-  // ── 6. RGB (normal-map) shader ────────────────────────────────────────
+  // ── 6. RGB (normal-map) shader ────────────────────────────────────────────
   useEffect(() => {
     meshesRef.current.forEach((mesh) => {
-      if (showRgb) {
+      if (settings.showRgb) {
         if (mesh.userData._mat === undefined) mesh.userData._mat = mesh.material
         mesh.material = new THREE.MeshNormalMaterial()
       } else {
@@ -272,107 +308,16 @@ export default function GltfViewer({
         }
       }
     })
-  }, [showRgb, loaded])
+  }, [settings.showRgb, loaded])
 
-  // ── UI ────────────────────────────────────────────────────────────────
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex gap-1 flex-wrap items-center p-2 shrink-0 bg-gray-900 border-b border-gray-800">
-
-        {/* Body toggle */}
-        <button
-          onClick={() => setShowBody(!showBody)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showBody
-              ? 'bg-gray-600 text-white'
-              : 'bg-gray-700 text-gray-400 line-through hover:bg-gray-600'
-          }`}
-          title="Show / hide solid mesh"
-        >
-          Body
-        </button>
-
-        {/* RGB shader */}
-        <button
-          onClick={() => setShowRgb(!showRgb)}
-          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-            showRgb ? 'bg-pink-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-          title="Normal-map RGB shader"
-        >
-          RGB
-        </button>
-
-        <div className="border-l border-gray-600 self-stretch" />
-
-        {/* Edges toggle + color */}
-        <div className="flex items-center">
-          <button
-            onClick={() => setShowEdges(!showEdges)}
-            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
-              showEdges ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Edges
-          </button>
-          <input
-            type="color"
-            value={edgesColor}
-            onChange={(e) => setEdgesColor(e.target.value)}
-            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
-            title="Edges color"
-          />
+    <div className="relative h-full w-full overflow-hidden">
+      {fileName && (
+        <div className="absolute top-2 left-2 z-10 text-xs text-white/80 bg-black/50 px-2 py-0.5 rounded pointer-events-none font-mono leading-tight">
+          {fileName}
         </div>
-
-        {/* Mesh toggle + color */}
-        <div className="flex items-center">
-          <button
-            onClick={() => setShowMesh(!showMesh)}
-            className={`px-3 py-1 rounded-l text-sm font-medium transition-colors ${
-              showMesh ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Mesh
-          </button>
-          <input
-            type="color"
-            value={meshColor}
-            onChange={(e) => setMeshColor(e.target.value)}
-            className="h-7 w-7 rounded-r cursor-pointer p-0.5 bg-gray-700 border-0"
-            title="Mesh color"
-          />
-        </div>
-
-        {/* Line width slider */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-gray-400 shrink-0">W</span>
-          <input
-            type="range" min="1" max="6" step="0.5"
-            value={lineWidth}
-            onChange={(e) => setLineWidth(Number(e.target.value))}
-            className="w-20 accent-blue-500"
-            title={`Line width: ${lineWidth}px`}
-          />
-          <span className="text-xs text-gray-500 w-5">{lineWidth}</span>
-        </div>
-
-        <div className="border-l border-gray-600 self-stretch" />
-
-        {/* Background */}
-        {(['dark', 'light', 'black', 'blue', 'grey'] as const).map((c) => (
-          <button
-            key={c}
-            onClick={() => setBgColor(c)}
-            className={`px-2 py-1 rounded text-xs font-medium transition-colors capitalize ${
-              bgColor === c ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
-
-      <div ref={mountRef} className="flex-1 min-h-0 overflow-hidden" />
+      )}
+      <div ref={mountRef} className="h-full w-full" />
     </div>
   )
 }
