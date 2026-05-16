@@ -298,6 +298,7 @@ interface SceneRefs {
 
 export default function VisualHull() {
   const mountRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const sceneRef = useRef<SceneRefs | null>(null)
   const hullDataRef = useRef<HullData | null>(null)
   const highlightRef = useRef<THREE.Mesh | null>(null)
@@ -520,6 +521,99 @@ export default function VisualHull() {
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   }, [nDirs])
 
+  // ── Load local file from disk ─────────────────────────────────────────────
+  const loadLocalFile = useCallback(async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    if (ext !== 'json' && ext !== 'glb' && ext !== 'gltf') return
+    const fileType: 'json' | 'gltf' = ext === 'json' ? 'json' : 'gltf'
+
+    const objectUrl = fileType === 'gltf' ? URL.createObjectURL(file) : null
+    const url = objectUrl ?? ''
+    const label = file.name
+
+    const s = sceneRef.current
+    if (!s) return
+    setLoadingFile(true)
+    handleReset()
+
+    try {
+      clearGroup(s.objectGroup); clearGroup(s.dirSpheresGroup)
+      clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+      highlightRef.current = null
+
+      let normPos: Float32Array
+
+      if (fileType === 'json') {
+        const text = await file.text()
+        const json = JSON.parse(text) as ThreeGeometryJson
+        normPos = normalisePositions(new Float32Array(json.vertices))
+        const dispGeo = parseGeometry(json)
+        dispGeo.setAttribute('position', new THREE.Float32BufferAttribute(normPos, 3))
+        if (!dispGeo.attributes.normal) dispGeo.computeVertexNormals()
+        const mesh = new THREE.Mesh(dispGeo, new THREE.MeshPhongMaterial({
+          color: 0xd4860a, emissive: 0x221100, shininess: 70, transparent: true, opacity: 0.88,
+        }))
+        s.objectGroup.add(mesh)
+        s.objectGroup.add(new THREE.LineSegments(
+          new THREE.WireframeGeometry(dispGeo),
+          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06 })
+        ))
+      } else {
+        const loader = new GLTFLoader()
+        const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) =>
+          loader.load(url, resolve, undefined, reject)
+        )
+        const allPos: number[] = []
+        gltf.scene.updateMatrixWorld(true)
+        gltf.scene.traverse(child => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh
+            const pos = mesh.geometry.attributes.position
+            for (let i = 0; i < pos.count; i++) {
+              const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld)
+              allPos.push(v.x, v.y, v.z)
+            }
+          }
+        })
+        normPos = normalisePositions(new Float32Array(allPos))
+        const rawBuf = new Float32Array(allPos)
+        let minX = Infinity, minY = Infinity, minZ = Infinity
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+        for (let i = 0; i < rawBuf.length; i += 3) {
+          minX = Math.min(minX, rawBuf[i]); maxX = Math.max(maxX, rawBuf[i])
+          minY = Math.min(minY, rawBuf[i+1]); maxY = Math.max(maxY, rawBuf[i+1])
+          minZ = Math.min(minZ, rawBuf[i+2]); maxZ = Math.max(maxZ, rawBuf[i+2])
+        }
+        const ocx = (minX+maxX)/2, ocy = (minY+maxY)/2, ocz = (minZ+maxZ)/2
+        let oMaxDist = 0
+        for (let i = 0; i < rawBuf.length; i += 3) {
+          const dx = rawBuf[i]-ocx, dy = rawBuf[i+1]-ocy, dz = rawBuf[i+2]-ocz
+          oMaxDist = Math.max(oMaxDist, Math.sqrt(dx*dx+dy*dy+dz*dz))
+        }
+        const oSc = oMaxDist > 0 ? 1.35/oMaxDist : 1
+        gltf.scene.scale.setScalar(oSc)
+        gltf.scene.position.set(-ocx*oSc, -ocy*oSc, -ocz*oSc)
+        gltf.scene.traverse(child => {
+          if ((child as THREE.Mesh).isMesh) {
+            const m = child as THREE.Mesh
+            m.material = new THREE.MeshPhongMaterial({ color: 0x3399cc, shininess: 70, transparent: true, opacity: 0.88 })
+          }
+        })
+        s.objectGroup.add(gltf.scene)
+      }
+
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      setupDirsAndHull(normPos)
+      setFileLabel(label)
+      setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
+    } catch (err) {
+      console.error('Local load error', err)
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    } finally {
+      setLoadingFile(false)
+    }
+  }, [handleReset, setupDirsAndHull])
+
   // ── Load file from Supabase ───────────────────────────────────────────────
   const fetchFileList = useCallback(async () => {
     setLoadingFiles(true)
@@ -661,7 +755,26 @@ export default function VisualHull() {
           ))}
         </div>
 
-        {/* File picker */}
+        {/* Local file open */}
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.glb,.gltf"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loadingFile}
+            className="px-2 py-0.5 rounded border border-gray-600 text-gray-300 text-xs hover:border-gray-300 transition-colors disabled:opacity-40"
+            title="Open local .json or .glb file"
+          >
+            📂 Open…
+          </button>
+        </div>
+
+        {/* Supabase file picker */}
         <div className="relative">
           <button
             onClick={() => { setShowPicker(v => !v); if (!supaFiles.length && !loadingFiles) fetchFileList() }}
