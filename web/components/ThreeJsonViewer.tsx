@@ -31,7 +31,7 @@ export interface ThreeGeometryJson {
 // Three.js legacy geometry format v3 (THREE.JSONLoader format)
 // Face bitmask: bit0=quad, bit1=material, bit2=faceUV, bit3=vertexUV,
 //               bit4=faceNormal, bit5=vertexNormals, bit6=faceColor, bit7=vertexColors
-function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
+export function parseGeometry(json: ThreeGeometryJson): THREE.BufferGeometry {
   const QUAD           = 0x01
   const HAS_MATERIAL   = 0x02
   const HAS_FACE_UV    = 0x04
