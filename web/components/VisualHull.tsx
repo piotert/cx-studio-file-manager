@@ -841,7 +841,7 @@ export default function VisualHull() {
 
         {/* Projection opacity */}
         <label className="flex items-center gap-2 text-xs">
-          <span className="text-gray-400">α proj</span>
+          <span className="text-gray-400 whitespace-nowrap">Silhouette opacity</span>
           <input type="range" min={0.05} max={0.8} step={0.05} value={projOpacity}
             onChange={e => setProjOpacity(+e.target.value)}
             className="w-16 accent-blue-400"
