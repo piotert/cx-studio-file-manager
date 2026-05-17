@@ -133,8 +133,11 @@ function computeSpaceCarving(
       const { u, v } = axes[k]
       const pu = vx*u.x + vy*u.y + vz*u.z
       const pv = vx*v.x + vy*v.y + vz*v.z
-      const px = Math.floor((pu + GRID_R) / (2*GRID_R) * resolution)
-      const py = Math.floor((pv + GRID_R) / (2*GRID_R) * resolution)
+      // projAxes returns u = cross(d,up) = -camera_right, v = -camera_up
+      // Three.js readRenderTargetPixels: px increases along camera_right, py along camera_up
+      // → negate both to align projection with rendered pixel coordinates
+      const px = Math.floor((-pu + GRID_R) / (2*GRID_R) * resolution)
+      const py = Math.floor((-pv + GRID_R) / (2*GRID_R) * resolution)
       if (px < 0 || px >= resolution || py < 0 || py >= resolution) continue
 
       const idx = (py * resolution + px) * 4
