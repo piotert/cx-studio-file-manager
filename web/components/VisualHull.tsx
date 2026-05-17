@@ -869,8 +869,8 @@ export default function VisualHull() {
 
         <label className="flex items-center gap-1.5">
           <span className="text-gray-400 whitespace-nowrap">Voxel</span>
-          <input type="range" min={12} max={56} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
-          <span className="font-mono text-purple-300 tabular-nums w-12">{voxelSize}</span>
+          <input type="range" min={12} max={96} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
+          <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? '⚠' : ''}</span>
         </label>
 
         {/* Stop mode */}
@@ -983,8 +983,13 @@ export default function VisualHull() {
             <div className={`font-mono text-lg tabular-nums ${delta > deltaThreshold ? 'text-emerald-400' : 'text-red-400'}`}>
               {volumes.length > 1 ? `−${delta.toFixed(3)}%` : '—'}
             </div>
+            {volumes.length > 1 && (
+              <div className="text-gray-600 text-[10px]">
+                {latestVol > 0 ? `${((delta / latestVol) * 100).toFixed(2)}% of hull` : ''}
+              </div>
+            )}
             {volumes.length > 1 && stopMode === 'delta' && (
-              <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div className="mt-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
                 <div className={`h-full rounded-full transition-all ${delta > deltaThreshold ? 'bg-emerald-500' : 'bg-red-500'}`}
                   style={{ width: `${Math.min(100, (delta / Math.max(0.01, deltaThreshold)) * 50)}%` }} />
               </div>
