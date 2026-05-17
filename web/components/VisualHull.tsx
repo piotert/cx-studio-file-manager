@@ -348,6 +348,7 @@ export default function VisualHull() {
   const [showEdges, setShowEdges]         = useState(false)
   const [showDirSpheres, setShowDirSpheres] = useState(true)
   const [showProjections, setShowProjections] = useState(true)
+  const [showRefSphere, setShowRefSphere]   = useState(true)
 
   const [supaFiles, setSupaFiles]   = useState<FileItem[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
@@ -420,6 +421,7 @@ export default function VisualHull() {
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-edges') c.visible = showEdges }) }, [showEdges])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.dirSpheresGroup.visible = showDirSpheres }, [showDirSpheres])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.projectionsGroup.visible = showProjections }, [showProjections])
+  useEffect(() => { const s = sceneRef.current; if (!s) return; s.refSphere.visible = showRefSphere }, [showRefSphere])
 
   // ── Direction spheres + hull computation ──────────────────────────────────
   const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number) => {
@@ -720,13 +722,13 @@ export default function VisualHull() {
 
         <label className="flex items-center gap-1.5">
           <span className="text-gray-400 whitespace-nowrap">Dirs N</span>
-          <input type="range" min={3} max={48} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-20 accent-orange-500" />
+          <input type="range" min={3} max={120} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-20 accent-orange-500" />
           <span className="font-mono text-orange-300 w-5 tabular-nums">{nDirs}</span>
         </label>
 
         <label className="flex items-center gap-1.5">
           <span className="text-gray-400 whitespace-nowrap">Voxel</span>
-          <input type="range" min={12} max={96} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
+          <input type="range" min={12} max={128} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
           <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? '⚠' : ''}</span>
         </label>
 
@@ -773,6 +775,7 @@ export default function VisualHull() {
           <button onClick={() => setShowEdges(v => !v)} className={btnToggle(showEdges)}>Edges</button>
           <button onClick={() => setShowDirSpheres(v => !v)} className={btnToggle(showDirSpheres)}>Dirs</button>
           <button onClick={() => setShowProjections(v => !v)} className={btnToggle(showProjections)}>Proj</button>
+          <button onClick={() => setShowRefSphere(v => !v)} className={btnToggle(showRefSphere)}>Sphere</button>
         </div>
 
         <div className="flex items-center gap-1 ml-auto">
