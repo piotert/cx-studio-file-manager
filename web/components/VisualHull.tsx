@@ -311,11 +311,11 @@ function buildProjectionMesh(
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type ObjType = 'torusknot' | 'box' | 'torus' | 'teapot' | 'star' | 'icosahedron' | 'cylinder' | 'cone'
+type ObjType = 'torusknot' | 'box' | 'torus' | 'teapot' | 'star' | 'icosahedron' | 'cylinder' | 'cone' | 'duck'
 
 const OBJ_LABELS: Record<ObjType, string> = {
   torusknot: 'Knot', box: 'Box', torus: 'Torus', teapot: 'Teapot',
-  star: 'Star', icosahedron: 'Ico', cylinder: 'Cylinder', cone: 'Cone',
+  star: 'Star', icosahedron: 'Ico', cylinder: 'Cylinder', cone: 'Cone', duck: '🦆 Duck',
 }
 
 function buildStarShape(outerR: number, innerR: number, n: number): THREE.Shape {
@@ -474,6 +474,57 @@ export default function VisualHull() {
 
   // ── Built-in object ────────────────────────────────────────────────────────
   const buildBuiltIn = useCallback((type: ObjType, grid: number, n: number) => {
+    // Duck is a GLB loaded asynchronously from /Duck.glb (public/)
+    if (type === 'duck') {
+      const s = sceneRef.current; if (!s) return
+      setLoadingFile(true)
+      clearGroup(s.objectGroup); clearGroup(s.dirSpheresGroup)
+      clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+      highlightRef.current = null
+      new GLTFLoader().load('/Duck.glb',
+        (gltf) => {
+          const sc2 = sceneRef.current; if (!sc2) { setLoadingFile(false); return }
+          // Extract verts + triangle soup inline (no processGltfScene dependency)
+          const allVerts: number[] = [], allTriPos: number[] = []
+          gltf.scene.updateMatrixWorld(true)
+          gltf.scene.traverse(child => {
+            if (!(child as THREE.Mesh).isMesh) return
+            const mesh = child as THREE.Mesh
+            const posAttr = mesh.geometry.attributes.position
+            const index = mesh.geometry.index
+            for (let i = 0; i < posAttr.count; i++) {
+              const v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld)
+              allVerts.push(v.x, v.y, v.z)
+            }
+            const cnt = index ? index.count : posAttr.count
+            for (let i = 0; i < cnt; i++) {
+              const vi = index ? index.getX(i) : i
+              const v = new THREE.Vector3().fromBufferAttribute(posAttr, vi).applyMatrix4(mesh.matrixWorld)
+              allTriPos.push(v.x, v.y, v.z)
+            }
+          })
+          const norm = computeNorm(new Float32Array(allVerts))
+          const triPos = applyNorm(new Float32Array(allTriPos), norm)
+          triPosRef.current = triPos
+          gltf.scene.scale.setScalar(norm.sc)
+          gltf.scene.position.set(-norm.cx*norm.sc, -norm.cy*norm.sc, -norm.cz*norm.sc)
+          gltf.scene.traverse(child => {
+            if ((child as THREE.Mesh).isMesh) {
+              const m = child as THREE.Mesh
+              m.name = 'obj-mesh'; m.visible = showBody
+              m.material = new THREE.MeshPhongMaterial({ color: 0xf5c518, emissive: 0x221100, shininess: 90, transparent: true, opacity: 0.92 })
+            }
+          })
+          sc2.objectGroup.add(gltf.scene)
+          setupDirsAndHull(triPos, grid, n)
+          setLoadingFile(false)
+        },
+        undefined,
+        (err) => { console.error('Duck load error', err); setLoadingFile(false) }
+      )
+      return
+    }
+
     let geo: THREE.BufferGeometry
     if (type === 'torusknot')   geo = new THREE.TorusKnotGeometry(0.7, 0.18, 120, 16)
     else if (type === 'torus')  geo = new THREE.TorusGeometry(0.65, 0.28, 48, 96)
@@ -484,7 +535,6 @@ export default function VisualHull() {
     else if (type === 'cone')   geo = new THREE.ConeGeometry(0.75, 1.5, 5, 1)
     else                        geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
 
-    // Normalise display geometry in-place using bounding sphere
     geo.computeBoundingSphere()
     const bs = geo.boundingSphere!
     const sc = 1.35 / bs.radius
@@ -492,13 +542,12 @@ export default function VisualHull() {
     const off = bs.center.clone().multiplyScalar(-sc)
     geo.translate(off.x, off.y, off.z)
 
-    // Extract triangle soup from already-normalised geometry
     const triPos = extractTriSoup(geo)
     triPosRef.current = triPos
 
     addMeshToScene(geo)
     setupDirsAndHull(triPos, grid, n)
-  }, [addMeshToScene, setupDirsAndHull])
+  }, [addMeshToScene, setupDirsAndHull, showBody])
 
   useEffect(() => {
     if (fileLabel) return
