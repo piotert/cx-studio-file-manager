@@ -367,6 +367,9 @@ export default function VisualHull() {
   const [showDirSpheres, setShowDirSpheres] = useState(true)
   const [showProjections, setShowProjections] = useState(true)
   const [showRefSphere, setShowRefSphere]   = useState(true)
+  const [showWire, setShowWire]             = useState(false)
+  const [showSidebar, setShowSidebar]       = useState(true)
+  const [showShortcuts, setShowShortcuts]   = useState(false)
 
   const [supaFiles, setSupaFiles]   = useState<FileItem[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
@@ -440,6 +443,7 @@ export default function VisualHull() {
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.dirSpheresGroup.visible = showDirSpheres }, [showDirSpheres])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.projectionsGroup.visible = showProjections }, [showProjections])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.refSphere.visible = showRefSphere }, [showRefSphere])
+  useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-wire') c.visible = showWire }) }, [showWire])
 
   // ── Direction spheres + hull computation ──────────────────────────────────
   const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number) => {
@@ -468,9 +472,11 @@ export default function VisualHull() {
     mesh.visible = showBody
     const edges = Object.assign(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: p.edgeColor, transparent: true, opacity: 0.4 })), { name: 'obj-edges' })
     edges.visible = showEdges
-    s.objectGroup.add(mesh, edges)
+    const wire = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+    wire.visible = showWire
+    s.objectGroup.add(mesh, edges, wire)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, showBody, showEdges])
+  }, [preset, showBody, showEdges, showWire])
 
   // ── Built-in object ────────────────────────────────────────────────────────
   const buildBuiltIn = useCallback((type: ObjType, grid: number, n: number) => {
@@ -515,7 +521,10 @@ export default function VisualHull() {
               m.material = new THREE.MeshPhongMaterial({ color: 0xf5c518, emissive: 0x221100, shininess: 90, transparent: true, opacity: 0.92 })
             }
           })
-          sc2.objectGroup.add(gltf.scene)
+          const duckWireGeo = new THREE.BufferGeometry(); duckWireGeo.setAttribute('position', new THREE.Float32BufferAttribute(triPos, 3))
+          const duckWire = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(duckWireGeo), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+          duckWire.visible = showWire
+          sc2.objectGroup.add(gltf.scene, duckWire)
           setupDirsAndHull(triPos, grid, n)
           setLoadingFile(false)
         },
@@ -612,6 +621,35 @@ export default function VisualHull() {
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   }, [nDirs])
 
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const OBJS: ObjType[] = ['torusknot','box','torus','teapot','star','icosahedron','cylinder','cone','duck']
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      switch (e.key) {
+        case ' ':    e.preventDefault(); setStopped(false); setIsPlaying(v => !v); break
+        case 'r': case 'R': handleReset(); break
+        case 'h': case 'H': setShowHull(v => !v); break
+        case 'b': case 'B': setShowBody(v => !v); break
+        case 'e': case 'E': setShowEdges(v => !v); break
+        case 'w': case 'W': setShowWire(v => !v); break
+        case 'd': case 'D': setShowDirSpheres(v => !v); break
+        case 'p': case 'P': setShowProjections(v => !v); break
+        case 's': case 'S': setShowRefSphere(v => !v); break
+        case 'i': case 'I': setShowSidebar(v => !v); break
+        case '?':           setShowShortcuts(v => !v); break
+        default:
+          if (e.key >= '1' && e.key <= '9') {
+            const t = OBJS[+e.key - 1]
+            if (t) { setFileLabel(null); setObjType(t) }
+          }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleReset])
+
+
   // ── Shared GLB extraction ─────────────────────────────────────────────────
   const processGltfScene = useCallback((gltf: { scene: THREE.Group }): { triPos: Float32Array; norm: NormParams } => {
     const allVerts: number[] = [], allTriPos: number[] = []
@@ -676,7 +714,9 @@ export default function VisualHull() {
             m.material = new THREE.MeshPhongMaterial({ color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88 })
           }
         })
-        s.objectGroup.add(gltf.scene)
+        const wg1 = new THREE.BufferGeometry(); wg1.setAttribute('position', new THREE.Float32BufferAttribute(triPosRef.current!, 3))
+        const wl1 = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(wg1), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+        wl1.visible = showWire; s.objectGroup.add(gltf.scene, wl1)
       }
 
       setupDirsAndHull(triPosRef.current!, gridSize, nDirs)
@@ -729,7 +769,9 @@ export default function VisualHull() {
             m.material = new THREE.MeshPhongMaterial({ color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88 })
           }
         })
-        s.objectGroup.add(gltf.scene)
+        const wg2 = new THREE.BufferGeometry(); wg2.setAttribute('position', new THREE.Float32BufferAttribute(triPosRef.current!, 3))
+        const wl2 = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(wg2), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+        wl2.visible = showWire; s.objectGroup.add(gltf.scene, wl2)
       }
 
       setupDirsAndHull(triPosRef.current!, gridSize, nDirs)
@@ -844,30 +886,55 @@ export default function VisualHull() {
 
         <div className="flex items-center gap-1">
           <span className="text-gray-500 mr-0.5">Show</span>
-          <button onClick={() => setShowBody(v => !v)} className={btnToggle(showBody)}>Body</button>
-          <button onClick={() => setShowEdges(v => !v)} className={btnToggle(showEdges)}>Edges</button>
-          <button onClick={() => setShowDirSpheres(v => !v)} className={btnToggle(showDirSpheres)}>Dirs</button>
-          <button onClick={() => setShowProjections(v => !v)} className={btnToggle(showProjections)}>Proj</button>
-          <button onClick={() => setShowRefSphere(v => !v)} className={btnToggle(showRefSphere)}>Sphere</button>
+          <button title="Body  [B]" onClick={() => setShowBody(v => !v)} className={btnToggle(showBody)}>Body</button>
+          <button title="Edges  [E]" onClick={() => setShowEdges(v => !v)} className={btnToggle(showEdges)}>Edges</button>
+          <button title="Wire tessellation  [W]" onClick={() => setShowWire(v => !v)} className={btnToggle(showWire)}>Wire</button>
+          <button title="Direction spheres  [D]" onClick={() => setShowDirSpheres(v => !v)} className={btnToggle(showDirSpheres)}>Dirs</button>
+          <button title="Projections  [P]" onClick={() => setShowProjections(v => !v)} className={btnToggle(showProjections)}>Proj</button>
+          <button title="Reference sphere  [S]" onClick={() => setShowRefSphere(v => !v)} className={btnToggle(showRefSphere)}>Sphere</button>
         </div>
 
         <div className="flex items-center gap-1 ml-auto">
-          <button onClick={() => setShowHull(v => !v)} disabled={!animDone}
+          <button title="Keyboard shortcuts  [?]" onClick={() => setShowShortcuts(v => !v)}
+            className="px-2 py-1 rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300 transition-colors text-sm">⌨</button>
+          <button title="Toggle stats panel  [I]" onClick={() => setShowSidebar(v => !v)}
+            className="px-2 py-1 rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300 transition-colors">▐</button>
+          <button title="Hull solid  [H]" onClick={() => setShowHull(v => !v)} disabled={!animDone}
             className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-600 text-gray-400 hover:border-teal-600'}`}>
             ◈ Hull
           </button>
-          <button onClick={() => { setStopped(false); setIsPlaying(v => !v) }} disabled={currentStep >= totalSteps && !stopped}
+          <button title="Play / Pause  [Space]" onClick={() => { setStopped(false); setIsPlaying(v => !v) }} disabled={currentStep >= totalSteps && !stopped}
             className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-40 ${isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'}`}>
-            {isPlaying ? '⏸ Pause' : currentStep === 0 ? '▶ Play' : '▶ Resume'}
+            {isPlaying ? '⏸' : currentStep === 0 ? '▶ Play' : '▶'}
           </button>
-          <button onClick={handleReset} className="px-2.5 py-1 rounded border border-gray-600 text-gray-400 hover:border-gray-400 transition-colors">↺ Reset</button>
+          <button title="Reset  [R]" onClick={handleReset} className="px-2.5 py-1 rounded border border-gray-600 text-gray-400 hover:border-gray-400 transition-colors">↺</button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex overflow-hidden">
+      <div className="flex-1 min-h-0 flex overflow-hidden relative">
         <div ref={mountRef} className="flex-1 min-w-0 min-h-0" />
 
-        <div className="w-48 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col gap-3 p-3 text-xs overflow-y-auto">
+        {/* Keyboard shortcuts overlay */}
+        {showShortcuts && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-gray-900/95 border border-gray-700 rounded-lg shadow-2xl p-4 text-xs text-gray-300 min-w-[260px]">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-gray-400 font-medium uppercase tracking-wider text-[10px]">Keyboard Shortcuts</span>
+              <button onClick={() => setShowShortcuts(false)} className="text-gray-600 hover:text-gray-300">✕</button>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+              {[['Space','Play / Pause'],['R','Reset'],['H','Toggle Hull'],['B','Body'],['E','Edges'],['W','Wireframe'],['D','Dir spheres'],['P','Projections'],['S','Ref sphere'],['I','Stats panel'],['1–9','Select object']].map(([k, v]) => (
+                <div key={k} className="flex items-center gap-2">
+                  <kbd className="px-1.5 py-0.5 bg-gray-800 border border-gray-600 rounded text-[10px] font-mono text-gray-300 shrink-0">{k}</kbd>
+                  <span className="text-gray-500">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Stats sidebar */}
+        {showSidebar && (
+        <div className="w-44 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col gap-3 p-3 text-xs overflow-y-auto">
           <div>
             <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Progress</div>
             <div className="font-mono text-gray-300 text-lg tabular-nums">{currentStep} <span className="text-gray-600 text-xs">/ {totalSteps}</span></div>
@@ -922,6 +989,7 @@ export default function VisualHull() {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   )
