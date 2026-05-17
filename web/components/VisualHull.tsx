@@ -118,6 +118,7 @@ interface HullData {
   axes: { u: THREE.Vector3; v: THREE.Vector3 }[]
   volumes: number[]
   finalInside: Uint8Array
+  insideSnapshots: Uint8Array[]                     // inside state after each direction (step-frame)
   voxCenters: Array<[number, number, number]>
   voxGridIdx: Array<[number, number, number]>
   fullGrid: Int32Array
@@ -153,6 +154,7 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
   const totalVox = voxCenters.length
   const inside = new Uint8Array(totalVox).fill(1)
   const volumes: number[] = []
+  const insideSnapshots: Uint8Array[] = []
 
   for (let k = 0; k < dirs.length; k++) {
     const { u, v } = axes[k]
@@ -186,9 +188,10 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
     let count = 0
     for (let vi = 0; vi < totalVox; vi++) count += inside[vi]
     volumes.push((count / totalVox) * 100)
+    insideSnapshots.push(inside.slice()) // snapshot after this direction
   }
 
-  return { dirs, masks, axes, volumes, finalInside: inside, voxCenters, voxGridIdx, fullGrid, grid }
+  return { dirs, masks, axes, volumes, finalInside: inside, insideSnapshots, voxCenters, voxGridIdx, fullGrid, grid }
 }
 
 // ── Hull surface mesh (exposed voxel faces) ───────────────────────────────────
@@ -202,13 +205,14 @@ const FACE_DEFS = [
   { g: [0,0,-1] as const, n: [0,0,-1] as const, s: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1]] as const },
 ]
 
-function buildHullSurface(data: HullData): THREE.BufferGeometry {
-  const { finalInside, voxCenters, voxGridIdx, fullGrid, grid } = data
+function buildHullSurface(data: HullData, insideOverride?: Uint8Array): THREE.BufferGeometry {
+  const inside = insideOverride ?? data.finalInside
+  const { voxCenters, voxGridIdx, fullGrid, grid } = data
   const h = (2 * GRID_R) / grid / 2
   const verts: number[] = [], norms: number[] = []
 
   for (let vi = 0; vi < voxCenters.length; vi++) {
-    if (!finalInside[vi]) continue
+    if (!inside[vi]) continue
     const [cx, cy, cz] = voxCenters[vi]
     const [xi, yi, zi] = voxGridIdx[vi]
     for (const { g, n, s } of FACE_DEFS) {
@@ -216,7 +220,7 @@ function buildHullSurface(data: HullData): THREE.BufferGeometry {
       let nbIn = false
       if (nxi >= 0 && nxi < grid && nyi >= 0 && nyi < grid && nzi >= 0 && nzi < grid) {
         const nvi = fullGrid[nxi*grid*grid + nyi*grid + nzi]
-        if (nvi !== -1 && finalInside[nvi]) nbIn = true
+        if (nvi !== -1 && inside[nvi]) nbIn = true
       }
       if (nbIn) continue
       const q = s.map(([qx, qy, qz]) => [cx+qx*h, cy+qy*h, cz+qz*h])
@@ -504,6 +508,14 @@ export default function VisualHull() {
       s.projectionsGroup.add(buildProjectionMesh(d.masks[step], d.grid, d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor))
       const vol = d.volumes[step], prevVol = step > 0 ? d.volumes[step - 1] : 100, delta = prevVol - vol
       setVolumes(prev => [...prev, vol])
+
+      // Rebuild hull from snapshot after this step
+      clearGroup(s.hullMeshGroup)
+      const p = PRESETS[preset]
+      const snapGeo = buildHullSurface(d, d.insideSnapshots[step])
+      s.hullMeshGroup.add(new THREE.Mesh(snapGeo, new THREE.MeshPhongMaterial({ color: p.hullColor, emissive: p.hullEmissive, shininess: 50, transparent: true, opacity: p.hullOpacity, side: THREE.DoubleSide })))
+      s.hullMeshGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(snapGeo, 15), new THREE.LineBasicMaterial({ color: p.hullColor, transparent: true, opacity: 0.2 })))
+
       const isLast = step === d.dirs.length - 1
       const deltaStop = stopMode === 'delta' && delta < deltaThreshold && step > 0
       if (isLast || deltaStop) { setStopped(deltaStop && !isLast); setIsPlaying(false); setShowHull(true) }
