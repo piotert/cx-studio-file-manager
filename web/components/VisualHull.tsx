@@ -36,15 +36,13 @@ function convexHull2D(raw: P2[]): P2[] {
   if (n < 2) return pts
   const lower: P2[] = []
   for (const p of pts) {
-    while (lower.length >= 2 && cross2d(lower[lower.length - 2], lower[lower.length - 1], p) <= 0)
-      lower.pop()
+    while (lower.length >= 2 && cross2d(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop()
     lower.push(p)
   }
   const upper: P2[] = []
   for (let i = n - 1; i >= 0; i--) {
     const p = pts[i]
-    while (upper.length >= 2 && cross2d(upper[upper.length - 2], upper[upper.length - 1], p) <= 0)
-      upper.pop()
+    while (upper.length >= 2 && cross2d(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop()
     upper.push(p)
   }
   return [...lower.slice(0, -1), ...upper.slice(0, -1)]
@@ -70,13 +68,7 @@ function projAxes(d: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
   return { u, v }
 }
 
-// ── Voxel grid constants ──────────────────────────────────────────────────────
-
-const GRID = 32
-const GRID_R = 1.5
-const GRID_STEP = (2 * GRID_R) / GRID
-
-// ── Visual-hull data ──────────────────────────────────────────────────────────
+// ── Visual hull data ──────────────────────────────────────────────────────────
 
 interface HullData {
   dirs: THREE.Vector3[]
@@ -86,10 +78,15 @@ interface HullData {
   finalInside: Uint8Array
   voxCenters: Array<[number, number, number]>
   voxGridIdx: Array<[number, number, number]>
-  fullGrid: Int32Array  // GRID³ → voxel index, or -1 if outside sphere
+  fullGrid: Int32Array
+  grid: number
 }
 
-function computeHullData(positions: Float32Array, dirs: THREE.Vector3[]): HullData {
+const GRID_R = 1.5
+
+function computeHullData(positions: Float32Array, dirs: THREE.Vector3[], grid: number): HullData {
+  const step = (2 * GRID_R) / grid
+
   const axes = dirs.map(d => projAxes(d))
   const hulls = dirs.map((d, k) => {
     const { u, v } = axes[k]
@@ -102,19 +99,18 @@ function computeHullData(positions: Float32Array, dirs: THREE.Vector3[]): HullDa
     return convexHull2D(pts2d)
   })
 
-  // Build voxel grid with full GRID³ lookup for neighbour queries
-  const fullGrid = new Int32Array(GRID * GRID * GRID).fill(-1)
+  const fullGrid = new Int32Array(grid * grid * grid).fill(-1)
   const voxCenters: Array<[number, number, number]> = []
   const voxGridIdx: Array<[number, number, number]> = []
 
-  for (let xi = 0; xi < GRID; xi++) {
-    for (let yi = 0; yi < GRID; yi++) {
-      for (let zi = 0; zi < GRID; zi++) {
-        const x = -GRID_R + (xi + 0.5) * GRID_STEP
-        const y = -GRID_R + (yi + 0.5) * GRID_STEP
-        const z = -GRID_R + (zi + 0.5) * GRID_STEP
+  for (let xi = 0; xi < grid; xi++) {
+    for (let yi = 0; yi < grid; yi++) {
+      for (let zi = 0; zi < grid; zi++) {
+        const x = -GRID_R + (xi + 0.5) * step
+        const y = -GRID_R + (yi + 0.5) * step
+        const z = -GRID_R + (zi + 0.5) * step
         if (x * x + y * y + z * z <= GRID_R * GRID_R) {
-          fullGrid[xi * GRID * GRID + yi * GRID + zi] = voxCenters.length
+          fullGrid[xi * grid * grid + yi * grid + zi] = voxCenters.length
           voxCenters.push([x, y, z])
           voxGridIdx.push([xi, yi, zi])
         }
@@ -141,12 +137,11 @@ function computeHullData(positions: Float32Array, dirs: THREE.Vector3[]): HullDa
     volumes.push((count / totalVox) * 100)
   }
 
-  return { dirs, hulls, axes, volumes, finalInside: inside, voxCenters, voxGridIdx, fullGrid }
+  return { dirs, hulls, axes, volumes, finalInside: inside, voxCenters, voxGridIdx, fullGrid, grid }
 }
 
-// ── Build visual-hull surface mesh (voxel surface extraction) ─────────────────
+// ── Build hull surface mesh (exposed voxel face extraction) ───────────────────
 
-// Each entry: neighbour offset [dx,dy,dz], face quad corners ×½step, outward normal
 const FACE_DEFS = [
   { g: [1,0,0] as const, n: [1,0,0] as const, s: [[1,1,1],[1,-1,1],[1,-1,-1],[1,1,-1]] as const },
   { g: [-1,0,0] as const, n: [-1,0,0] as const, s: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]] as const },
@@ -157,8 +152,8 @@ const FACE_DEFS = [
 ]
 
 function buildHullSurface(data: HullData): THREE.BufferGeometry {
-  const { finalInside, voxCenters, voxGridIdx, fullGrid } = data
-  const h = GRID_STEP / 2
+  const { finalInside, voxCenters, voxGridIdx, fullGrid, grid } = data
+  const h = (2 * GRID_R) / grid / 2
   const verts: number[] = []
   const norms: number[] = []
 
@@ -170,13 +165,11 @@ function buildHullSurface(data: HullData): THREE.BufferGeometry {
     for (const { g, n, s } of FACE_DEFS) {
       const nxi = xi + g[0], nyi = yi + g[1], nzi = zi + g[2]
       let nbIn = false
-      if (nxi >= 0 && nxi < GRID && nyi >= 0 && nyi < GRID && nzi >= 0 && nzi < GRID) {
-        const nvi = fullGrid[nxi * GRID * GRID + nyi * GRID + nzi]
+      if (nxi >= 0 && nxi < grid && nyi >= 0 && nyi < grid && nzi >= 0 && nzi < grid) {
+        const nvi = fullGrid[nxi * grid * grid + nyi * grid + nzi]
         if (nvi !== -1 && finalInside[nvi]) nbIn = true
       }
       if (nbIn) continue
-
-      // Add two triangles for this exposed face (quad split 0-1-2 + 0-2-3)
       const q = s.map(([qx, qy, qz]) => [cx + qx * h, cy + qy * h, cz + qz * h])
       verts.push(...q[0], ...q[1], ...q[2], ...q[0], ...q[2], ...q[3])
       for (let t = 0; t < 6; t++) norms.push(...n)
@@ -190,7 +183,36 @@ function buildHullSurface(data: HullData): THREE.BufferGeometry {
   return geo
 }
 
-// ── Normalise vertex positions to fit bounding sphere R≈1.35 ─────────────────
+// ── Visual presets ────────────────────────────────────────────────────────────
+
+type PresetKey = 'dark' | 'blueprint' | 'light' | 'drawing' | 'xray' | 'black'
+
+interface Preset {
+  bg: number
+  objColor: number
+  objEmissive: number
+  hullColor: number
+  hullEmissive: number
+  hullOpacity: number
+  edgeColor: number
+  projColor: number
+  sphereRefColor: number
+}
+
+const PRESETS: Record<PresetKey, Preset> = {
+  dark:      { bg: 0x0a0a14, objColor: 0xd4860a, objEmissive: 0x221100, hullColor: 0x00e5aa, hullEmissive: 0x003322, hullOpacity: 0.55, edgeColor: 0x4499ff, projColor: 0x1155cc, sphereRefColor: 0x1a1a33 },
+  blueprint: { bg: 0x0a0f32, objColor: 0x5588ff, objEmissive: 0x001144, hullColor: 0x00ffcc, hullEmissive: 0x00332a, hullOpacity: 0.45, edgeColor: 0x88bbff, projColor: 0x2244cc, sphereRefColor: 0x0d1c4a },
+  light:     { bg: 0xf0f2f5, objColor: 0x3366aa, objEmissive: 0x001133, hullColor: 0x009977, hullEmissive: 0x002211, hullOpacity: 0.45, edgeColor: 0x224488, projColor: 0x2244aa, sphereRefColor: 0xcccccc },
+  drawing:   { bg: 0xf5f5f0, objColor: 0x555555, objEmissive: 0x111111, hullColor: 0x224444, hullEmissive: 0x000000, hullOpacity: 0.40, edgeColor: 0x111111, projColor: 0x334444, sphereRefColor: 0xbbbbaa },
+  xray:      { bg: 0x000000, objColor: 0x004422, objEmissive: 0x002211, hullColor: 0x00ff88, hullEmissive: 0x005533, hullOpacity: 0.35, edgeColor: 0x00ff88, projColor: 0x003322, sphereRefColor: 0x111111 },
+  black:     { bg: 0x000000, objColor: 0xcc8800, objEmissive: 0x221100, hullColor: 0x00cc99, hullEmissive: 0x002211, hullOpacity: 0.50, edgeColor: 0x00aaff, projColor: 0x113355, sphereRefColor: 0x111111 },
+}
+
+const PRESET_LABELS: Record<PresetKey, string> = {
+  dark: 'Dark', blueprint: 'Blueprint', light: 'Light', drawing: 'Drawing', xray: 'X-Ray', black: 'Black',
+}
+
+// ── Normalise vertex positions to bounding sphere R≈1.35 ──────────────────────
 
 function normalisePositions(rawPos: Float32Array): Float32Array {
   let minX = Infinity, minY = Infinity, minZ = Infinity
@@ -221,26 +243,17 @@ function normalisePositions(rawPos: Float32Array): Float32Array {
 function disposeObj(obj: THREE.Object3D) {
   if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose()
   const mat = (obj as THREE.Mesh).material
-  if (mat) {
-    if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-    else (mat as THREE.Material).dispose()
-  }
+  if (mat) { Array.isArray(mat) ? mat.forEach(m => m.dispose()) : (mat as THREE.Material).dispose() }
 }
 
 function clearGroup(g: THREE.Group) {
-  while (g.children.length > 0) {
-    const c = g.children[0]
-    g.remove(c)
-    disposeObj(c)
-  }
+  while (g.children.length > 0) { const c = g.children[0]; g.remove(c); disposeObj(c) }
 }
 
 function buildProjectionMesh(
-  hull2d: P2[],
-  dir: THREE.Vector3,
+  hull2d: P2[], dir: THREE.Vector3,
   axes: { u: THREE.Vector3; v: THREE.Vector3 },
-  dist: number,
-  opacity: number
+  dist: number, opacity: number, projColor: number,
 ): THREE.Group {
   const group = new THREE.Group()
   const pos = dir.clone().multiplyScalar(dist)
@@ -253,36 +266,31 @@ function buildProjectionMesh(
     shape.moveTo(hull2d[0][0], hull2d[0][1])
     for (let i = 1; i < hull2d.length; i++) shape.lineTo(hull2d[i][0], hull2d[i][1])
     shape.closePath()
-
     const fillGeo = new THREE.ShapeGeometry(shape)
     const fill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({
-      color: 0x1155cc, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false,
+      color: projColor, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false,
     }))
     fill.position.copy(pos); fill.quaternion.copy(quat)
     group.add(fill)
-
-    const edge = new THREE.LineSegments(
-      new THREE.EdgesGeometry(fillGeo),
-      new THREE.LineBasicMaterial({ color: 0x4499ff, transparent: true, opacity: 0.75 })
-    )
+    const edgeColor = new THREE.Color(projColor).multiplyScalar(1.6)
+    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(fillGeo),
+      new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: Math.min(1, opacity * 2) }))
     edge.position.copy(pos); edge.quaternion.copy(quat)
     group.add(edge)
   }
 
   const axisGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), pos])
-  group.add(new THREE.Line(axisGeo, new THREE.LineBasicMaterial({ color: 0x1a3355, transparent: true, opacity: 0.4 })))
+  const axisColor = new THREE.Color(projColor).multiplyScalar(0.6)
+  group.add(new THREE.Line(axisGeo, new THREE.LineBasicMaterial({ color: axisColor, transparent: true, opacity: 0.4 })))
   return group
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 type ObjType = 'torusknot' | 'box'
+type StopMode = 'delta' | 'all'
 
-interface FileItem {
-  name: string
-  url: string
-  fileType: 'json' | 'gltf'
-}
+interface FileItem { name: string; url: string; fileType: 'json' | 'gltf' }
 
 interface SceneRefs {
   renderer: THREE.WebGLRenderer
@@ -294,6 +302,7 @@ interface SceneRefs {
   dirSpheresGroup: THREE.Group
   projectionsGroup: THREE.Group
   hullMeshGroup: THREE.Group
+  refSphere: THREE.LineSegments
 }
 
 export default function VisualHull() {
@@ -302,18 +311,32 @@ export default function VisualHull() {
   const sceneRef = useRef<SceneRefs | null>(null)
   const hullDataRef = useRef<HullData | null>(null)
   const highlightRef = useRef<THREE.Mesh | null>(null)
+  const positionsRef = useRef<Float32Array | null>(null)
 
+  // Algorithm params
   const [objType, setObjType] = useState<ObjType>('torusknot')
-  const [nDirs, setNDirs] = useState(12)
+  const [nDirs, setNDirs] = useState(16)
+  const [gridSize, setGridSize] = useState(32)
+  const [stopMode, setStopMode] = useState<StopMode>('delta')
+  const [deltaThreshold, setDeltaThreshold] = useState(0.5)
+  const [stepDelay, setStepDelay] = useState(500)
+  const [projOpacity, setProjOpacity] = useState(0.35)
+
+  // Animation state
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
-  const [deltaThreshold, setDeltaThreshold] = useState(0.5)
-  const [stepDelay, setStepDelay] = useState(600)
-  const [projOpacity, setProjOpacity] = useState(0.35)
   const [volumes, setVolumes] = useState<number[]>([])
   const [stopped, setStopped] = useState(false)
   const [showHull, setShowHull] = useState(false)
 
+  // Visual
+  const [preset, setPreset] = useState<PresetKey>('dark')
+  const [showBody, setShowBody] = useState(true)
+  const [showEdges, setShowEdges] = useState(false)
+  const [showDirSpheres, setShowDirSpheres] = useState(true)
+  const [showProjections, setShowProjections] = useState(true)
+
+  // File picker
   const [supaFiles, setSupaFiles] = useState<FileItem[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [loadingFile, setLoadingFile] = useState(false)
@@ -327,7 +350,7 @@ export default function VisualHull() {
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.setClearColor(0x0a0a14, 1)
+    renderer.setClearColor(PRESETS.dark.bg, 1)
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -340,10 +363,11 @@ export default function VisualHull() {
     controls.autoRotate = true
     controls.autoRotateSpeed = 0.5
 
-    scene.add(new THREE.LineSegments(
+    const refSphere = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.SphereGeometry(1.5, 24, 12)),
-      new THREE.LineBasicMaterial({ color: 0x1a1a33, transparent: true, opacity: 0.3 })
-    ))
+      new THREE.LineBasicMaterial({ color: PRESETS.dark.sphereRefColor, transparent: true, opacity: 0.3 })
+    )
+    scene.add(refSphere)
 
     scene.add(new THREE.AmbientLight(0x7788aa, 0.9))
     const dl = new THREE.DirectionalLight(0xaabbdd, 2.0); dl.position.set(3, 4, 3); scene.add(dl)
@@ -358,19 +382,16 @@ export default function VisualHull() {
     const resize = () => {
       const w = mount.clientWidth, h = mount.clientHeight
       if (!w || !h) return
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(w, h)
+      camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h)
     }
     resize()
-    const ro = new ResizeObserver(resize)
-    ro.observe(mount)
+    const ro = new ResizeObserver(resize); ro.observe(mount)
 
     let rafId = 0
     const animate = () => { rafId = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera) }
     animate()
 
-    sceneRef.current = { renderer, scene, camera, controls, rafId, objectGroup, dirSpheresGroup, projectionsGroup, hullMeshGroup }
+    sceneRef.current = { renderer, scene, camera, controls, rafId, objectGroup, dirSpheresGroup, projectionsGroup, hullMeshGroup, refSphere }
     return () => {
       cancelAnimationFrame(rafId); ro.disconnect(); controls.dispose(); renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
@@ -378,34 +399,84 @@ export default function VisualHull() {
     }
   }, [])
 
-  // ── Hull mesh rebuild when showHull toggles ────────────────────────────────
+  // ── Apply preset ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const s = sceneRef.current
+    if (!s) return
+    const p = PRESETS[preset]
+    s.renderer.setClearColor(p.bg, 1)
+    ;(s.refSphere.material as THREE.LineBasicMaterial).color.setHex(p.sphereRefColor)
+
+    // Object meshes
+    s.objectGroup.traverse(child => {
+      if (child.name === 'obj-mesh' && (child as THREE.Mesh).isMesh) {
+        const mat = (child as THREE.Mesh).material as THREE.MeshPhongMaterial
+        mat.color.setHex(p.objColor); mat.emissive.setHex(p.objEmissive)
+      }
+      if (child.name === 'obj-edges') {
+        ;(child as THREE.LineSegments).material = new THREE.LineBasicMaterial({ color: p.edgeColor, transparent: true, opacity: 0.4 })
+      }
+    })
+
+    // Hull mesh
+    s.hullMeshGroup.traverse(child => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mat = (child as THREE.Mesh).material as THREE.MeshPhongMaterial
+        mat.color.setHex(p.hullColor); mat.emissive.setHex(p.hullEmissive); mat.opacity = p.hullOpacity
+      }
+    })
+  }, [preset])
+
+  // ── Hull mesh rebuild ──────────────────────────────────────────────────────
   useEffect(() => {
     const s = sceneRef.current
     if (!s) return
     clearGroup(s.hullMeshGroup)
     if (!showHull || !hullDataRef.current) return
 
+    const p = PRESETS[preset]
     const geo = buildHullSurface(hullDataRef.current)
-    const mat = new THREE.MeshPhongMaterial({
-      color: 0x00e5aa, emissive: 0x003322, shininess: 50,
-      transparent: true, opacity: 0.55, side: THREE.DoubleSide,
-    })
-    s.hullMeshGroup.add(new THREE.Mesh(geo, mat))
+    s.hullMeshGroup.add(Object.assign(new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+      color: p.hullColor, emissive: p.hullEmissive, shininess: 50,
+      transparent: true, opacity: p.hullOpacity, side: THREE.DoubleSide,
+    })), { name: 'hull-mesh' }))
     s.hullMeshGroup.add(new THREE.LineSegments(
       new THREE.EdgesGeometry(geo, 15),
-      new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.2 })
+      new THREE.LineBasicMaterial({ color: p.hullColor, transparent: true, opacity: 0.2 })
     ))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHull])
 
-  // ── Build direction spheres and compute hull data ─────────────────────────
-  const setupDirsAndHull = useCallback((positions: Float32Array) => {
+  // ── View mode toggles ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.objectGroup.traverse(c => { if (c.name === 'obj-mesh') c.visible = showBody })
+  }, [showBody])
+
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.objectGroup.traverse(c => { if (c.name === 'obj-edges') c.visible = showEdges })
+  }, [showEdges])
+
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.dirSpheresGroup.visible = showDirSpheres
+  }, [showDirSpheres])
+
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.projectionsGroup.visible = showProjections
+  }, [showProjections])
+
+  // ── Build direction spheres + hull data ───────────────────────────────────
+  const setupDirsAndHull = useCallback((positions: Float32Array, grid: number, n: number) => {
     const s = sceneRef.current
     if (!s) return
     clearGroup(s.dirSpheresGroup)
 
-    const dirs = makeFibDirs(nDirs)
+    const dirs = makeFibDirs(n)
     dirs.forEach((d, i) => {
-      const t = i / Math.max(nDirs - 1, 1)
+      const t = i / Math.max(n - 1, 1)
       const col = new THREE.Color().setHSL(0.08 + t * 0.05, 0.9, 0.55)
       const sphere = new THREE.Mesh(
         new THREE.SphereGeometry(0.045, 8, 6),
@@ -414,50 +485,75 @@ export default function VisualHull() {
       sphere.position.copy(d.clone().multiplyScalar(1.55))
       s.dirSpheresGroup.add(sphere)
     })
+    s.dirSpheresGroup.visible = showDirSpheres
 
-    hullDataRef.current = computeHullData(positions, dirs)
-  }, [nDirs])
-
-  // ── Built-in object geometry ───────────────────────────────────────────────
-  const buildObjectGeometry = useCallback((type: ObjType): { mesh: THREE.Mesh; positions: Float32Array } => {
-    let geo: THREE.BufferGeometry
-    if (type === 'torusknot') {
-      geo = new THREE.TorusKnotGeometry(0.7, 0.18, 80, 14)
-    } else {
-      geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
-    }
-    geo.computeBoundingSphere()
-    const bs = geo.boundingSphere!
-    const scale = 1.35 / bs.radius
-    geo.scale(scale, scale, scale)
-    const off = bs.center.clone().multiplyScalar(-scale)
-    geo.translate(off.x, off.y, off.z)
-
-    const mat = new THREE.MeshPhongMaterial({
-      color: type === 'torusknot' ? 0xd4860a : 0x3399cc,
-      emissive: type === 'torusknot' ? 0x331800 : 0x001122,
-      shininess: 80, transparent: true, opacity: 0.88,
-    })
-    return { mesh: new THREE.Mesh(geo, mat), positions: geo.attributes.position.array as Float32Array }
+    hullDataRef.current = computeHullData(positions, dirs, grid)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Rebuild when built-in object type or nDirs changes
+  // ── Helper: add a built-in mesh to objectGroup ────────────────────────────
+  const addMeshToScene = useCallback((geo: THREE.BufferGeometry, color: number, emissive: number) => {
+    const s = sceneRef.current; if (!s) return
+    clearGroup(s.objectGroup)
+    const mesh = Object.assign(new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+      color, emissive, shininess: 80, transparent: true, opacity: 0.88,
+    })), { name: 'obj-mesh' })
+    mesh.visible = showBody
+    const edges = Object.assign(new THREE.LineSegments(
+      new THREE.EdgesGeometry(geo, 30),
+      new THREE.LineBasicMaterial({ color: PRESETS[preset].edgeColor, transparent: true, opacity: 0.4 })
+    ), { name: 'obj-edges' })
+    edges.visible = showEdges
+    const wire = Object.assign(new THREE.LineSegments(
+      new THREE.WireframeGeometry(geo),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.05 })
+    ), { name: 'obj-wire' })
+    s.objectGroup.add(mesh, edges, wire)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset, showBody, showEdges])
+
+  // ── Built-in object rebuild ───────────────────────────────────────────────
+  const buildBuiltIn = useCallback((type: ObjType, grid: number, n: number) => {
+    let geo: THREE.BufferGeometry
+    if (type === 'torusknot') geo = new THREE.TorusKnotGeometry(0.7, 0.18, 80, 14)
+    else geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
+
+    geo.computeBoundingSphere()
+    const bs = geo.boundingSphere!
+    const sc = 1.35 / bs.radius
+    geo.scale(sc, sc, sc)
+    const off = bs.center.clone().multiplyScalar(-sc)
+    geo.translate(off.x, off.y, off.z)
+
+    const p = PRESETS[preset]
+    addMeshToScene(geo, p.objColor, p.objEmissive)
+
+    const positions = geo.attributes.position.array as Float32Array
+    positionsRef.current = positions
+    setupDirsAndHull(positions, grid, n)
+  }, [preset, addMeshToScene, setupDirsAndHull])
+
+  // Rebuild when params change (only for built-in objects)
   useEffect(() => {
     if (fileLabel) return
-    const s = sceneRef.current
-    if (!s) return
-    clearGroup(s.objectGroup); clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+    const s = sceneRef.current; if (!s) return
+    clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
     highlightRef.current = null
-
-    const { mesh, positions } = buildObjectGeometry(objType)
-    const wire = new THREE.LineSegments(
-      new THREE.WireframeGeometry(mesh.geometry),
-      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 })
-    )
-    s.objectGroup.add(mesh, wire)
-    setupDirsAndHull(positions)
+    buildBuiltIn(objType, gridSize, nDirs)
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
-  }, [objType, nDirs, buildObjectGeometry, setupDirsAndHull, fileLabel])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objType, nDirs, gridSize])
+
+  // Rebuild hull data only when grid/dirs change (for loaded files)
+  useEffect(() => {
+    if (!fileLabel || !positionsRef.current) return
+    const s = sceneRef.current; if (!s) return
+    clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+    highlightRef.current = null
+    setupDirsAndHull(positionsRef.current, gridSize, nDirs)
+    setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nDirs, gridSize])
 
   // ── Animation: step-by-step carving ───────────────────────────────────────
   useEffect(() => {
@@ -487,22 +583,28 @@ export default function VisualHull() {
         highlightRef.current = dirSphere
       }
 
-      s.projectionsGroup.add(buildProjectionMesh(d.hulls[step], d.dirs[step], d.axes[step], 1.75, projOpacity))
+      s.projectionsGroup.add(buildProjectionMesh(
+        d.hulls[step], d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor
+      ))
 
       const vol = d.volumes[step]
       const prevVol = step > 0 ? d.volumes[step - 1] : 100
       const delta = prevVol - vol
       setVolumes(prev => [...prev, vol])
 
-      if (delta < deltaThreshold && step > 0) {
-        setStopped(true); setIsPlaying(false); setShowHull(true)
+      const isLast = step === d.dirs.length - 1
+      const deltaStop = stopMode === 'delta' && delta < deltaThreshold && step > 0
+      if (isLast || deltaStop) {
+        setStopped(deltaStop && !isLast)
+        setIsPlaying(false)
+        setShowHull(true)
       } else {
         setCurrentStep(step + 1)
       }
     }, stepDelay)
 
     return () => clearTimeout(timer)
-  }, [isPlaying, currentStep, stepDelay, deltaThreshold, projOpacity, stopped])
+  }, [isPlaying, currentStep, stepDelay, deltaThreshold, projOpacity, stopped, stopMode, preset])
 
   // ── Reset ─────────────────────────────────────────────────────────────────
   const handleReset = useCallback(() => {
@@ -521,48 +623,74 @@ export default function VisualHull() {
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   }, [nDirs])
 
-  // ── Load local file from disk ─────────────────────────────────────────────
+  // ── Load local file ───────────────────────────────────────────────────────
+  const applyLoadedMesh = useCallback((
+    dispGeo: THREE.BufferGeometry | null,
+    gltfScene: THREE.Group | null,
+    normPos: Float32Array,
+    label: string,
+  ) => {
+    const s = sceneRef.current; if (!s) return
+    const p = PRESETS[preset]
+    clearGroup(s.objectGroup)
+
+    if (dispGeo) {
+      if (!dispGeo.attributes.normal) dispGeo.computeVertexNormals()
+      const mesh = Object.assign(new THREE.Mesh(dispGeo, new THREE.MeshPhongMaterial({
+        color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88,
+      })), { name: 'obj-mesh' })
+      mesh.visible = showBody
+      const edges = Object.assign(new THREE.LineSegments(
+        new THREE.EdgesGeometry(dispGeo, 30),
+        new THREE.LineBasicMaterial({ color: p.edgeColor, transparent: true, opacity: 0.4 })
+      ), { name: 'obj-edges' })
+      edges.visible = showEdges
+      s.objectGroup.add(mesh, edges)
+    }
+
+    if (gltfScene) {
+      gltfScene.traverse(child => {
+        if ((child as THREE.Mesh).isMesh) {
+          const m = child as THREE.Mesh
+          m.name = 'obj-mesh'
+          m.visible = showBody
+          m.material = new THREE.MeshPhongMaterial({ color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88 })
+        }
+      })
+      s.objectGroup.add(gltfScene)
+    }
+
+    positionsRef.current = normPos
+    setupDirsAndHull(normPos, gridSize, nDirs)
+    setFileLabel(label)
+    setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset, showBody, showEdges, gridSize, nDirs, setupDirsAndHull])
+
   const loadLocalFile = useCallback(async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
     if (ext !== 'json' && ext !== 'glb' && ext !== 'gltf') return
-    const fileType: 'json' | 'gltf' = ext === 'json' ? 'json' : 'gltf'
-
-    const objectUrl = fileType === 'gltf' ? URL.createObjectURL(file) : null
-    const url = objectUrl ?? ''
-    const label = file.name
-
-    const s = sceneRef.current
-    if (!s) return
     setLoadingFile(true)
     handleReset()
 
     try {
-      clearGroup(s.objectGroup); clearGroup(s.dirSpheresGroup)
-      clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+      const s = sceneRef.current; if (!s) return
+      clearGroup(s.dirSpheresGroup); clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
       highlightRef.current = null
 
-      let normPos: Float32Array
-
-      if (fileType === 'json') {
-        const text = await file.text()
-        const json = JSON.parse(text) as ThreeGeometryJson
-        normPos = normalisePositions(new Float32Array(json.vertices))
+      if (ext === 'json') {
+        const json = JSON.parse(await file.text()) as ThreeGeometryJson
+        const normPos = normalisePositions(new Float32Array(json.vertices))
         const dispGeo = parseGeometry(json)
         dispGeo.setAttribute('position', new THREE.Float32BufferAttribute(normPos, 3))
-        if (!dispGeo.attributes.normal) dispGeo.computeVertexNormals()
-        const mesh = new THREE.Mesh(dispGeo, new THREE.MeshPhongMaterial({
-          color: 0xd4860a, emissive: 0x221100, shininess: 70, transparent: true, opacity: 0.88,
-        }))
-        s.objectGroup.add(mesh)
-        s.objectGroup.add(new THREE.LineSegments(
-          new THREE.WireframeGeometry(dispGeo),
-          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06 })
-        ))
+        applyLoadedMesh(dispGeo, null, normPos, file.name)
       } else {
+        const objectUrl = URL.createObjectURL(file)
         const loader = new GLTFLoader()
         const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) =>
-          loader.load(url, resolve, undefined, reject)
+          loader.load(objectUrl, resolve, undefined, reject)
         )
+        URL.revokeObjectURL(objectUrl)
         const allPos: number[] = []
         gltf.scene.updateMatrixWorld(true)
         gltf.scene.traverse(child => {
@@ -575,103 +703,62 @@ export default function VisualHull() {
             }
           }
         })
-        normPos = normalisePositions(new Float32Array(allPos))
-        const rawBuf = new Float32Array(allPos)
-        let minX = Infinity, minY = Infinity, minZ = Infinity
-        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
-        for (let i = 0; i < rawBuf.length; i += 3) {
-          minX = Math.min(minX, rawBuf[i]); maxX = Math.max(maxX, rawBuf[i])
-          minY = Math.min(minY, rawBuf[i+1]); maxY = Math.max(maxY, rawBuf[i+1])
-          minZ = Math.min(minZ, rawBuf[i+2]); maxZ = Math.max(maxZ, rawBuf[i+2])
+        const normPos = normalisePositions(new Float32Array(allPos))
+        // fit GLTF scene to same normalised scale
+        const raw = new Float32Array(allPos)
+        let mnX = Infinity, mnY = Infinity, mnZ = Infinity, mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity
+        for (let i = 0; i < raw.length; i += 3) {
+          mnX = Math.min(mnX, raw[i]); mxX = Math.max(mxX, raw[i])
+          mnY = Math.min(mnY, raw[i+1]); mxY = Math.max(mxY, raw[i+1])
+          mnZ = Math.min(mnZ, raw[i+2]); mxZ = Math.max(mxZ, raw[i+2])
         }
-        const ocx = (minX+maxX)/2, ocy = (minY+maxY)/2, ocz = (minZ+maxZ)/2
-        let oMaxDist = 0
-        for (let i = 0; i < rawBuf.length; i += 3) {
-          const dx = rawBuf[i]-ocx, dy = rawBuf[i+1]-ocy, dz = rawBuf[i+2]-ocz
-          oMaxDist = Math.max(oMaxDist, Math.sqrt(dx*dx+dy*dy+dz*dz))
+        const ocx = (mnX+mxX)/2, ocy = (mnY+mxY)/2, ocz = (mnZ+mxZ)/2
+        let oMx = 0
+        for (let i = 0; i < raw.length; i += 3) {
+          const dx = raw[i]-ocx, dy = raw[i+1]-ocy, dz = raw[i+2]-ocz
+          oMx = Math.max(oMx, Math.sqrt(dx*dx+dy*dy+dz*dz))
         }
-        const oSc = oMaxDist > 0 ? 1.35/oMaxDist : 1
+        const oSc = oMx > 0 ? 1.35/oMx : 1
         gltf.scene.scale.setScalar(oSc)
         gltf.scene.position.set(-ocx*oSc, -ocy*oSc, -ocz*oSc)
-        gltf.scene.traverse(child => {
-          if ((child as THREE.Mesh).isMesh) {
-            const m = child as THREE.Mesh
-            m.material = new THREE.MeshPhongMaterial({ color: 0x3399cc, shininess: 70, transparent: true, opacity: 0.88 })
-          }
-        })
-        s.objectGroup.add(gltf.scene)
+        applyLoadedMesh(null, gltf.scene, normPos, file.name)
       }
+    } catch (err) { console.error('Load error', err) }
+    finally { setLoadingFile(false) }
+  }, [handleReset, applyLoadedMesh])
 
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-      setupDirsAndHull(normPos)
-      setFileLabel(label)
-      setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
-    } catch (err) {
-      console.error('Local load error', err)
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    } finally {
-      setLoadingFile(false)
-    }
-  }, [handleReset, setupDirsAndHull])
-
-  // ── Load file from Supabase ───────────────────────────────────────────────
+  // ── Supabase file list ────────────────────────────────────────────────────
   const fetchFileList = useCallback(async () => {
     setLoadingFiles(true)
     try {
       const res = await fetch('/api/files')
       if (!res.ok) throw new Error()
       const data: { name: string; url: string; type: string }[] = await res.json()
-      setSupaFiles(
-        data
-          .filter(f => f.type === 'json' || f.type === 'gltf')
-          .map(f => ({ name: f.name, url: f.url, fileType: f.type as 'json' | 'gltf' }))
-      )
+      setSupaFiles(data.filter(f => f.type === 'json' || f.type === 'gltf')
+        .map(f => ({ name: f.name, url: f.url, fileType: f.type as 'json' | 'gltf' })))
     } catch { setSupaFiles([]) }
     finally { setLoadingFiles(false) }
   }, [])
 
-  const loadFile = useCallback(async (url: string, label: string, fileType: 'json' | 'gltf') => {
-    const s = sceneRef.current
-    if (!s) return
+  const loadSupaFile = useCallback(async (url: string, label: string, fileType: 'json' | 'gltf') => {
     setLoadingFile(true); setShowPicker(false)
     handleReset()
-
     try {
-      clearGroup(s.objectGroup); clearGroup(s.dirSpheresGroup)
-      clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
+      const s = sceneRef.current; if (!s) return
+      clearGroup(s.dirSpheresGroup); clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
       highlightRef.current = null
 
-      let normPos: Float32Array
-
       if (fileType === 'json') {
-        // Three.js legacy geometry JSON
-        const resp = await fetch(url)
-        const json = await resp.json() as ThreeGeometryJson
-
-        normPos = normalisePositions(new Float32Array(json.vertices))
-
-        // Build display mesh using the same parser as ThreeJsonViewer
+        const json = await (await fetch(url)).json() as ThreeGeometryJson
+        const normPos = normalisePositions(new Float32Array(json.vertices))
         const dispGeo = parseGeometry(json)
-        // Scale / centre the display geometry to match normPos
         dispGeo.setAttribute('position', new THREE.Float32BufferAttribute(normPos, 3))
-        if (!dispGeo.attributes.normal) dispGeo.computeVertexNormals()
-
-        const mesh = new THREE.Mesh(dispGeo, new THREE.MeshPhongMaterial({
-          color: 0xd4860a, emissive: 0x221100, shininess: 70, transparent: true, opacity: 0.88,
-        }))
-        s.objectGroup.add(mesh)
-        s.objectGroup.add(new THREE.LineSegments(
-          new THREE.WireframeGeometry(dispGeo),
-          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06 })
-        ))
-
+        applyLoadedMesh(dispGeo, null, normPos, label)
       } else {
-        // GLB / GLTF
         const loader = new GLTFLoader()
         const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) =>
           loader.load(url, resolve, undefined, reject)
         )
-
         const allPos: number[] = []
         gltf.scene.updateMatrixWorld(true)
         gltf.scene.traverse(child => {
@@ -684,120 +771,83 @@ export default function VisualHull() {
             }
           }
         })
-
-        normPos = normalisePositions(new Float32Array(allPos))
-
-        // Fit the GLTF scene to the same bounding sphere as normPos
-        const rawBuf = new Float32Array(allPos)
-        let minX = Infinity, minY = Infinity, minZ = Infinity
-        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
-        for (let i = 0; i < rawBuf.length; i += 3) {
-          minX = Math.min(minX, rawBuf[i]); maxX = Math.max(maxX, rawBuf[i])
-          minY = Math.min(minY, rawBuf[i + 1]); maxY = Math.max(maxY, rawBuf[i + 1])
-          minZ = Math.min(minZ, rawBuf[i + 2]); maxZ = Math.max(maxZ, rawBuf[i + 2])
+        const normPos = normalisePositions(new Float32Array(allPos))
+        const raw = new Float32Array(allPos)
+        let mnX = Infinity, mnY = Infinity, mnZ = Infinity, mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity
+        for (let i = 0; i < raw.length; i += 3) {
+          mnX = Math.min(mnX, raw[i]); mxX = Math.max(mxX, raw[i])
+          mnY = Math.min(mnY, raw[i+1]); mxY = Math.max(mxY, raw[i+1])
+          mnZ = Math.min(mnZ, raw[i+2]); mxZ = Math.max(mxZ, raw[i+2])
         }
-        const ocx = (minX + maxX) / 2, ocy = (minY + maxY) / 2, ocz = (minZ + maxZ) / 2
-        let oMaxDist = 0
-        for (let i = 0; i < rawBuf.length; i += 3) {
-          const dx = rawBuf[i] - ocx, dy = rawBuf[i + 1] - ocy, dz = rawBuf[i + 2] - ocz
-          oMaxDist = Math.max(oMaxDist, Math.sqrt(dx * dx + dy * dy + dz * dz))
+        const ocx = (mnX+mxX)/2, ocy = (mnY+mxY)/2, ocz = (mnZ+mxZ)/2
+        let oMx = 0
+        for (let i = 0; i < raw.length; i += 3) {
+          const dx = raw[i]-ocx, dy = raw[i+1]-ocy, dz = raw[i+2]-ocz
+          oMx = Math.max(oMx, Math.sqrt(dx*dx+dy*dy+dz*dz))
         }
-        const oSc = oMaxDist > 0 ? 1.35 / oMaxDist : 1
-        gltf.scene.scale.setScalar(oSc)
-        gltf.scene.position.set(-ocx * oSc, -ocy * oSc, -ocz * oSc)
-        gltf.scene.traverse(child => {
-          if ((child as THREE.Mesh).isMesh) {
-            const m = child as THREE.Mesh
-            m.material = new THREE.MeshPhongMaterial({ color: 0x3399cc, shininess: 70, transparent: true, opacity: 0.88 })
-          }
-        })
-        s.objectGroup.add(gltf.scene)
+        const oSc = oMx > 0 ? 1.35/oMx : 1
+        gltf.scene.scale.setScalar(oSc); gltf.scene.position.set(-ocx*oSc, -ocy*oSc, -ocz*oSc)
+        applyLoadedMesh(null, gltf.scene, normPos, label)
       }
+    } catch (err) { console.error('Load error', err) }
+    finally { setLoadingFile(false) }
+  }, [handleReset, applyLoadedMesh])
 
-      setupDirsAndHull(normPos)
-      setFileLabel(label)
-      setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
-
-    } catch (err) {
-      console.error('Load error', err)
-    } finally {
-      setLoadingFile(false)
-    }
-  }, [handleReset, setupDirsAndHull])
-
-  // ── Derived metrics ───────────────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────────────────────
   const latestVol = volumes.length > 0 ? volumes[volumes.length - 1] : 100
-  const prevVol = volumes.length > 1 ? volumes[volumes.length - 2] : 100
-  const delta = prevVol - latestVol
+  const prevVol   = volumes.length > 1 ? volumes[volumes.length - 2] : 100
+  const delta     = prevVol - latestVol
   const totalSteps = hullDataRef.current?.dirs.length ?? nDirs
-  const animDone = (currentStep >= totalSteps && volumes.length > 0) || stopped
+  const animDone  = (currentStep >= totalSteps && volumes.length > 0) || stopped
+  const voxelSize = ((2 * GRID_R) / gridSize).toFixed(3)
+
+  const btnToggle = (active: boolean) =>
+    `px-2 py-0.5 rounded border text-xs transition-colors ${
+      active ? 'border-sky-500 text-sky-300 bg-sky-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'
+    }`
 
   return (
     <div className="h-full flex flex-col">
-      {/* Controls */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-800 shrink-0 flex-wrap gap-y-1.5 bg-gray-950">
-        {/* Object selector */}
-        <div className="flex items-center gap-1 text-xs">
-          <span className="text-gray-500 mr-1">Object</span>
+      {/* ── Controls row ─────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-x-3 gap-y-1 px-4 py-2 border-b border-gray-800 shrink-0 flex-wrap bg-gray-950 text-xs">
+
+        {/* Object source */}
+        <div className="flex items-center gap-1">
+          <span className="text-gray-500 mr-1">Obj</span>
           {(['torusknot', 'box'] as ObjType[]).map(t => (
-            <button
-              key={t}
-              disabled={!!fileLabel}
+            <button key={t} disabled={!!fileLabel}
               onClick={() => { setFileLabel(null); setObjType(t) }}
-              className={`px-2 py-0.5 rounded border text-xs transition-colors disabled:opacity-40 ${
-                objType === t && !fileLabel
-                  ? 'border-orange-500 text-orange-300 bg-orange-900/30'
-                  : 'border-gray-600 text-gray-400 hover:border-gray-400'
-              }`}
-            >
-              {t === 'torusknot' ? 'Torus Knot' : 'Box'}
+              className={`px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${
+                objType === t && !fileLabel ? 'border-orange-500 text-orange-300 bg-orange-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'
+              }`}>
+              {t === 'torusknot' ? 'Torus' : 'Box'}
             </button>
           ))}
         </div>
 
         {/* Local file open */}
         <div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,.glb,.gltf"
-            className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }}
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loadingFile}
-            className="px-2 py-0.5 rounded border border-gray-600 text-gray-300 text-xs hover:border-gray-300 transition-colors disabled:opacity-40"
-            title="Open local .json or .glb file"
-          >
+          <input ref={fileInputRef} type="file" accept=".json,.glb,.gltf" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }} />
+          <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile}
+            className="px-2 py-0.5 rounded border border-gray-600 text-gray-300 hover:border-gray-300 transition-colors disabled:opacity-40">
             📂 Open…
           </button>
         </div>
 
-        {/* Supabase file picker */}
+        {/* Supabase picker */}
         <div className="relative">
-          <button
-            onClick={() => { setShowPicker(v => !v); if (!supaFiles.length && !loadingFiles) fetchFileList() }}
-            className={`px-2 py-0.5 rounded border text-xs transition-colors ${
-              fileLabel
-                ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20'
-                : 'border-gray-600 text-gray-400 hover:border-gray-400'
-            }`}
-          >
-            {loadingFile ? '…loading' : fileLabel ? `↗ ${fileLabel.replace(/^\d+_/, '')}` : '↗ Load file'}
+          <button onClick={() => { setShowPicker(v => !v); if (!supaFiles.length && !loadingFiles) fetchFileList() }}
+            className={`px-2 py-0.5 rounded border transition-colors ${fileLabel ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
+            {loadingFile ? '…' : fileLabel ? `↗ ${fileLabel.replace(/^\d+_/, '')}` : '↗ Supabase'}
           </button>
           {showPicker && (
             <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-700 rounded shadow-xl min-w-[220px] max-h-52 overflow-y-auto">
-              {loadingFiles && <div className="px-3 py-2 text-xs text-gray-400">Loading…</div>}
-              {!loadingFiles && supaFiles.length === 0 && (
-                <div className="px-3 py-2 text-xs text-gray-500">No JSON / GLB files found</div>
-              )}
+              {loadingFiles && <div className="px-3 py-2 text-gray-400">Loading…</div>}
+              {!loadingFiles && supaFiles.length === 0 && <div className="px-3 py-2 text-gray-500">No files</div>}
               {supaFiles.map(f => (
-                <button
-                  key={f.url}
-                  onClick={() => loadFile(f.url, f.name, f.fileType)}
-                  className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2"
-                >
+                <button key={f.url} onClick={() => loadSupaFile(f.url, f.name, f.fileType)}
+                  className="w-full text-left px-3 py-1.5 text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2">
                   <span className={`text-[10px] font-mono px-1 rounded ${f.fileType === 'json' ? 'bg-orange-900/40 text-orange-400' : 'bg-blue-900/40 text-blue-400'}`}>
                     {f.fileType.toUpperCase()}
                   </span>
@@ -810,80 +860,96 @@ export default function VisualHull() {
 
         <div className="w-px h-4 bg-gray-700 shrink-0" />
 
-        {/* N slider */}
-        <label className="flex items-center gap-2 text-xs">
+        {/* Algorithm params */}
+        <label className="flex items-center gap-1.5">
           <span className="text-gray-400 whitespace-nowrap">Dirs N</span>
-          <input type="range" min={3} max={30} value={nDirs}
-            onChange={e => setNDirs(+e.target.value)}
-            className="w-24 accent-orange-500"
-          />
+          <input type="range" min={3} max={48} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-20 accent-orange-500" />
           <span className="font-mono text-orange-300 w-5 tabular-nums">{nDirs}</span>
         </label>
 
-        {/* Speed */}
-        <label className="flex items-center gap-2 text-xs">
+        <label className="flex items-center gap-1.5">
+          <span className="text-gray-400 whitespace-nowrap">Voxel</span>
+          <input type="range" min={12} max={56} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
+          <span className="font-mono text-purple-300 tabular-nums w-12">{voxelSize}</span>
+        </label>
+
+        {/* Stop mode */}
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400">Stop</span>
+          <button onClick={() => setStopMode('delta')} className={btnToggle(stopMode === 'delta')}>Δ</button>
+          <button onClick={() => setStopMode('all')} className={btnToggle(stopMode === 'all')}>All N</button>
+        </div>
+
+        {stopMode === 'delta' && (
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-400 whitespace-nowrap">Δ &lt;</span>
+            <input type="range" min={0.01} max={5} step={0.01} value={deltaThreshold}
+              onChange={e => setDeltaThreshold(+e.target.value)} className="w-20 accent-red-400" />
+            <span className="font-mono text-red-300 tabular-nums w-12">{deltaThreshold.toFixed(2)}%</span>
+          </label>
+        )}
+
+        <label className="flex items-center gap-1.5">
           <span className="text-gray-400">Speed</span>
-          <input type="range" min={100} max={2000} step={100} value={stepDelay}
-            onChange={e => setStepDelay(+e.target.value)}
-            className="w-20 accent-gray-400"
-          />
+          <input type="range" min={50} max={2000} step={50} value={stepDelay}
+            onChange={e => setStepDelay(+e.target.value)} className="w-16 accent-gray-400" />
         </label>
 
-        {/* Delta threshold */}
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-gray-400 whitespace-nowrap">Stop Δ &lt;</span>
-          <input type="range" min={0.1} max={5} step={0.1} value={deltaThreshold}
-            onChange={e => setDeltaThreshold(+e.target.value)}
-            className="w-20 accent-red-400"
-          />
-          <span className="font-mono text-red-300 tabular-nums">{deltaThreshold.toFixed(1)}%</span>
-        </label>
-
-        {/* Projection opacity */}
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-gray-400 whitespace-nowrap">Silhouette opacity</span>
+        <label className="flex items-center gap-1.5">
+          <span className="text-gray-400">Silhouette</span>
           <input type="range" min={0.05} max={0.8} step={0.05} value={projOpacity}
-            onChange={e => setProjOpacity(+e.target.value)}
-            className="w-16 accent-blue-400"
-          />
+            onChange={e => setProjOpacity(+e.target.value)} className="w-14 accent-blue-400" />
         </label>
 
-        <div className="flex items-center gap-1.5 ml-auto">
-          {/* Hull toggle — always visible, activates automatically at end */}
-          <button
-            onClick={() => setShowHull(v => !v)}
-            disabled={!animDone}
-            className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-30 ${
-              showHull
-                ? 'border-teal-500 text-teal-300 bg-teal-900/30'
-                : 'border-gray-600 text-gray-400 hover:border-teal-600'
-            }`}
-            title="Show/hide visual hull solid"
-          >
+        <div className="w-px h-4 bg-gray-700 shrink-0" />
+
+        {/* Presets */}
+        <div className="flex items-center gap-1">
+          {(Object.keys(PRESETS) as PresetKey[]).map(k => (
+            <button key={k} onClick={() => setPreset(k)}
+              className={`px-2 py-0.5 rounded border transition-colors ${
+                preset === k ? 'border-white/50 text-white bg-white/10' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300'
+              }`}>
+              {PRESET_LABELS[k]}
+            </button>
+          ))}
+        </div>
+
+        <div className="w-px h-4 bg-gray-700 shrink-0" />
+
+        {/* View toggles */}
+        <div className="flex items-center gap-1">
+          <span className="text-gray-500 mr-0.5">Show</span>
+          <button onClick={() => setShowBody(v => !v)} className={btnToggle(showBody)}>Body</button>
+          <button onClick={() => setShowEdges(v => !v)} className={btnToggle(showEdges)}>Edges</button>
+          <button onClick={() => setShowDirSpheres(v => !v)} className={btnToggle(showDirSpheres)}>Dirs</button>
+          <button onClick={() => setShowProjections(v => !v)} className={btnToggle(showProjections)}>Proj</button>
+        </div>
+
+        {/* Playback */}
+        <div className="flex items-center gap-1 ml-auto">
+          <button onClick={() => setShowHull(v => !v)} disabled={!animDone}
+            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-30 ${
+              showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-600 text-gray-400 hover:border-teal-600'
+            }`}>
             ◈ Hull
           </button>
-
           <button
             onClick={() => { setStopped(false); setIsPlaying(v => !v) }}
             disabled={currentStep >= totalSteps && !stopped}
-            className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 ${
-              isPlaying
-                ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20'
-                : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'
-            }`}
-          >
+            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-40 ${
+              isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'
+            }`}>
             {isPlaying ? '⏸ Pause' : currentStep === 0 ? '▶ Play' : '▶ Resume'}
           </button>
-          <button
-            onClick={handleReset}
-            className="px-2.5 py-1 text-xs rounded border border-gray-600 text-gray-400 hover:border-gray-400 transition-colors"
-          >
+          <button onClick={handleReset}
+            className="px-2.5 py-1 rounded border border-gray-600 text-gray-400 hover:border-gray-400 transition-colors">
             ↺ Reset
           </button>
         </div>
       </div>
 
-      {/* Main area */}
+      {/* ── Main area ──────────────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <div ref={mountRef} className="flex-1 min-w-0 min-h-0" />
 
@@ -913,39 +979,39 @@ export default function VisualHull() {
           </div>
 
           <div>
-            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Delta</div>
+            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Δ per step</div>
             <div className={`font-mono text-lg tabular-nums ${delta > deltaThreshold ? 'text-emerald-400' : 'text-red-400'}`}>
-              {volumes.length > 1 ? `−${delta.toFixed(2)}%` : '—'}
+              {volumes.length > 1 ? `−${delta.toFixed(3)}%` : '—'}
             </div>
-            {volumes.length > 1 && (
+            {volumes.length > 1 && stopMode === 'delta' && (
               <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${delta > deltaThreshold ? 'bg-emerald-500' : 'bg-red-500'}`}
-                  style={{ width: `${Math.min(100, Math.max(0, (delta / Math.max(1, prevVol)) * 100 * 5))}%` }}
-                />
+                <div className={`h-full rounded-full transition-all ${delta > deltaThreshold ? 'bg-emerald-500' : 'bg-red-500'}`}
+                  style={{ width: `${Math.min(100, (delta / Math.max(0.01, deltaThreshold)) * 50)}%` }} />
               </div>
             )}
           </div>
 
+          <div>
+            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Grid</div>
+            <div className="font-mono text-purple-300">{gridSize}³</div>
+            <div className="text-gray-600 text-[10px]">voxel {voxelSize} u</div>
+          </div>
+
           {stopped && (
             <div className="rounded border border-red-800 bg-red-900/20 px-2 py-1.5 text-red-400 text-[11px]">
-              Stopped — Δ &lt; {deltaThreshold}%
+              Δ &lt; {deltaThreshold.toFixed(2)}% — stopped
             </div>
           )}
-
           {currentStep >= totalSteps && !stopped && volumes.length > 0 && (
             <div className="rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-gray-400 text-[11px]">
-              All {totalSteps} directions processed
+              All {totalSteps} directions done
             </div>
           )}
-
           {animDone && (
-            <div className={`rounded border px-2 py-1.5 text-[11px] ${
-              showHull
-                ? 'border-teal-700 bg-teal-900/20 text-teal-400'
-                : 'border-gray-700 text-gray-500'
-            }`}>
-              {showHull ? '◈ Hull visible' : '◈ Hull ready — click Hull button'}
+            <div className={`rounded border px-2 py-1.5 text-[11px] cursor-pointer transition-colors ${
+              showHull ? 'border-teal-700 bg-teal-900/20 text-teal-400' : 'border-gray-700 text-gray-500 hover:border-teal-700'
+            }`} onClick={() => setShowHull(v => !v)}>
+              {showHull ? '◈ Hull visible' : '◈ Show hull solid'}
             </div>
           )}
 
@@ -955,8 +1021,7 @@ export default function VisualHull() {
               <svg viewBox={`0 0 ${volumes.length} 40`} className="w-full h-10" preserveAspectRatio="none">
                 <polyline
                   points={volumes.map((v, i) => `${i},${40 - (v / 100) * 36}`).join(' ')}
-                  fill="none" stroke="#3366cc" strokeWidth="1.5" vectorEffect="non-scaling-stroke"
-                />
+                  fill="none" stroke="#3366cc" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
               </svg>
             </div>
           )}
