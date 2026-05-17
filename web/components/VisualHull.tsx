@@ -22,32 +22,6 @@ function makeFibDirs(n: number): THREE.Vector3[] {
   return dirs
 }
 
-// ── 2-D convex hull (for projection-plane display only) ───────────────────────
-
-type P2 = [number, number]
-
-function cross2d(O: P2, A: P2, B: P2): number {
-  return (A[0] - O[0]) * (B[1] - O[1]) - (A[1] - O[1]) * (B[0] - O[0])
-}
-
-function convexHull2D(raw: P2[]): P2[] {
-  const pts = [...raw].sort((a, b) => a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1])
-  const n = pts.length
-  if (n < 2) return pts
-  const lower: P2[] = []
-  for (const p of pts) {
-    while (lower.length >= 2 && cross2d(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop()
-    lower.push(p)
-  }
-  const upper: P2[] = []
-  for (let i = n - 1; i >= 0; i--) {
-    const p = pts[i]
-    while (upper.length >= 2 && cross2d(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop()
-    upper.push(p)
-  }
-  return [...lower.slice(0, -1), ...upper.slice(0, -1)]
-}
-
 // ── Projection axes ────────────────────────────────────────────────────────────
 
 function projAxes(d: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
@@ -140,7 +114,7 @@ function rasterizeTriangle(
 
 interface HullData {
   dirs: THREE.Vector3[]
-  hulls: P2[][]                                     // convex approx, display only
+  masks: Uint8Array[]                               // exact rasterized silhouette per direction
   axes: { u: THREE.Vector3; v: THREE.Vector3 }[]
   volumes: number[]
   finalInside: Uint8Array
@@ -155,17 +129,7 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
   const nTri = triPositions.length / 9
 
   const axes = dirs.map(d => projAxes(d))
-
-  // Convex hulls of projected vertices — used only for the blue projection-plane display
-  const hulls = dirs.map((_, k) => {
-    const { u, v } = axes[k]
-    const pts2d: P2[] = []
-    for (let j = 0; j < triPositions.length / 3; j++) {
-      const x = triPositions[j*3], y = triPositions[j*3+1], z = triPositions[j*3+2]
-      pts2d.push([x*u.x + y*u.y + z*u.z, x*v.x + y*v.y + z*v.z])
-    }
-    return convexHull2D(pts2d)
-  })
+  const masks: Uint8Array[] = []
 
   // Build voxel grid with neighbour lookup
   const fullGrid = new Int32Array(grid * grid * grid).fill(-1)
@@ -193,7 +157,7 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
   for (let k = 0; k < dirs.length; k++) {
     const { u, v } = axes[k]
 
-    // Rasterize every triangle onto a 2-D shadow mask
+    // Rasterize every triangle onto a 2-D shadow mask; save for projection display
     const mask = new Uint8Array(grid * grid)
     for (let t = 0; t < nTri; t++) {
       const b = t * 9
@@ -205,6 +169,7 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
       const pv2 = triPositions[b+6]*v.x + triPositions[b+7]*v.y + triPositions[b+8]*v.z
       rasterizeTriangle(pu0, pv0, pu1, pv1, pu2, pv2, mask, grid, step)
     }
+    masks.push(mask)
 
     // Carve voxels whose 2-D projection falls outside the mask
     for (let vi = 0; vi < totalVox; vi++) {
@@ -223,7 +188,7 @@ function computeHullData(triPositions: Float32Array, dirs: THREE.Vector3[], grid
     volumes.push((count / totalVox) * 100)
   }
 
-  return { dirs, hulls, axes, volumes, finalInside: inside, voxCenters, voxGridIdx, fullGrid, grid }
+  return { dirs, masks, axes, volumes, finalInside: inside, voxCenters, voxGridIdx, fullGrid, grid }
 }
 
 // ── Hull surface mesh (exposed voxel faces) ───────────────────────────────────
@@ -287,28 +252,53 @@ const PRESET_LABELS: Record<PresetKey, string> = { dark: 'Dark', blueprint: 'Blu
 function disposeObj(obj: THREE.Object3D) {
   if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose()
   const mat = (obj as THREE.Mesh).material
-  if (mat) { Array.isArray(mat) ? mat.forEach(m => m.dispose()) : (mat as THREE.Material).dispose() }
+  if (mat) {
+    const mats = Array.isArray(mat) ? mat : [mat as THREE.Material]
+    mats.forEach(m => { if ((m as THREE.MeshBasicMaterial).map) (m as THREE.MeshBasicMaterial).map!.dispose(); m.dispose() })
+  }
 }
 function clearGroup(g: THREE.Group) {
   while (g.children.length > 0) { const c = g.children[0]; g.remove(c); disposeObj(c) }
 }
 
-function buildProjectionMesh(hull2d: P2[], dir: THREE.Vector3, axes: { u: THREE.Vector3; v: THREE.Vector3 }, dist: number, opacity: number, projColor: number): THREE.Group {
+function buildProjectionMesh(
+  mask: Uint8Array, grid: number,
+  dir: THREE.Vector3, axes: { u: THREE.Vector3; v: THREE.Vector3 },
+  dist: number, opacity: number, projColor: number,
+): THREE.Group {
   const group = new THREE.Group()
   const pos = dir.clone().multiplyScalar(dist)
   const { u, v } = axes
   const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, dir))
-  if (hull2d.length >= 3) {
-    const shape = new THREE.Shape()
-    shape.moveTo(hull2d[0][0], hull2d[0][1])
-    for (let i = 1; i < hull2d.length; i++) shape.lineTo(hull2d[i][0], hull2d[i][1])
-    shape.closePath()
-    const fillGeo = new THREE.ShapeGeometry(shape)
-    const fill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({ color: projColor, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }))
-    fill.position.copy(pos); fill.quaternion.copy(quat); group.add(fill)
-    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(fillGeo), new THREE.LineBasicMaterial({ color: new THREE.Color(projColor).multiplyScalar(1.6), transparent: true, opacity: Math.min(1, opacity * 2) }))
-    edge.position.copy(pos); edge.quaternion.copy(quat); group.add(edge)
+
+  // Build RGBA DataTexture from exact rasterized mask
+  // mask[ui * grid + vj]: ui = horizontal (u-axis), vj = vertical (v-axis)
+  // DataTexture: index (vj * grid + ui) * 4 — row-major, y=0 at bottom
+  const col = new THREE.Color(projColor)
+  const r = Math.round(col.r * 255), g = Math.round(col.g * 255), b = Math.round(col.b * 255)
+  const a = Math.round(opacity * 255)
+  const texData = new Uint8Array(grid * grid * 4)
+  for (let vj = 0; vj < grid; vj++) {
+    for (let ui = 0; ui < grid; ui++) {
+      if (mask[ui * grid + vj]) {
+        const idx = (vj * grid + ui) * 4
+        texData[idx] = r; texData[idx+1] = g; texData[idx+2] = b; texData[idx+3] = a
+      }
+    }
   }
+  const tex = new THREE.DataTexture(texData, grid, grid)
+  tex.magFilter = THREE.NearestFilter
+  tex.minFilter = THREE.NearestFilter
+  tex.needsUpdate = true
+
+  const plane = new THREE.Mesh(
+    new THREE.PlaneGeometry(2 * GRID_R, 2 * GRID_R),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false }),
+  )
+  plane.position.copy(pos); plane.quaternion.copy(quat)
+  group.add(plane)
+
+  // Axis line from origin to plane centre
   const axisGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), pos])
   group.add(new THREE.Line(axisGeo, new THREE.LineBasicMaterial({ color: new THREE.Color(projColor).multiplyScalar(0.6), transparent: true, opacity: 0.4 })))
   return group
@@ -511,7 +501,7 @@ export default function VisualHull() {
       if (highlightRef.current) { const m = highlightRef.current.material as THREE.MeshPhongMaterial; m.emissiveIntensity = 0.3; m.color.setHSL(0.08, 0.9, 0.55) }
       const dirSphere = s.dirSpheresGroup.children[step] as THREE.Mesh
       if (dirSphere) { const m = dirSphere.material as THREE.MeshPhongMaterial; m.color.set(0xffffff); m.emissive.set(0xffaa00); m.emissiveIntensity = 1.0; highlightRef.current = dirSphere }
-      s.projectionsGroup.add(buildProjectionMesh(d.hulls[step], d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor))
+      s.projectionsGroup.add(buildProjectionMesh(d.masks[step], d.grid, d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor))
       const vol = d.volumes[step], prevVol = step > 0 ? d.volumes[step - 1] : 100, delta = prevVol - vol
       setVolumes(prev => [...prev, vol])
       const isLast = step === d.dirs.length - 1
