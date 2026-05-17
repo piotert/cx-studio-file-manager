@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 const TOOLS = [
   { label: 'Fibonacci Sphere', href: '/tools/fibonacci-sphere' },
   { label: 'Visual Hull', href: '/tools/visual-hull' },
+  { label: 'Space Carving', href: '/tools/space-carving' },
 ]
 
 export default function ToolsNav() {
