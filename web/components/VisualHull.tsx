@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { parseGeometry, type ThreeGeometryJson } from './ThreeJsonViewer'
+import { TeapotGeometry } from 'three/examples/jsm/geometries/TeapotGeometry.js'
 
 // ── Fibonacci sphere ───────────────────────────────────────────────────────────
 
@@ -310,7 +311,24 @@ function buildProjectionMesh(
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type ObjType = 'torusknot' | 'box'
+type ObjType = 'torusknot' | 'box' | 'torus' | 'teapot' | 'star' | 'icosahedron' | 'cylinder' | 'cone'
+
+const OBJ_LABELS: Record<ObjType, string> = {
+  torusknot: 'Knot', box: 'Box', torus: 'Torus', teapot: 'Teapot',
+  star: 'Star', icosahedron: 'Ico', cylinder: 'Cylinder', cone: 'Cone',
+}
+
+function buildStarShape(outerR: number, innerR: number, n: number): THREE.Shape {
+  const shape = new THREE.Shape()
+  for (let i = 0; i < n * 2; i++) {
+    const angle = (i / (n * 2)) * Math.PI * 2 - Math.PI / 2
+    const r = i % 2 === 0 ? outerR : innerR
+    const x = Math.cos(angle) * r, y = Math.sin(angle) * r
+    i === 0 ? shape.moveTo(x, y) : shape.lineTo(x, y)
+  }
+  shape.closePath()
+  return shape
+}
 type StopMode = 'delta' | 'all'
 interface FileItem { name: string; url: string; fileType: 'json' | 'gltf' }
 interface SceneRefs {
@@ -457,8 +475,14 @@ export default function VisualHull() {
   // ── Built-in object ────────────────────────────────────────────────────────
   const buildBuiltIn = useCallback((type: ObjType, grid: number, n: number) => {
     let geo: THREE.BufferGeometry
-    if (type === 'torusknot') geo = new THREE.TorusKnotGeometry(0.7, 0.18, 120, 16)
-    else geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
+    if (type === 'torusknot')   geo = new THREE.TorusKnotGeometry(0.7, 0.18, 120, 16)
+    else if (type === 'torus')  geo = new THREE.TorusGeometry(0.65, 0.28, 48, 96)
+    else if (type === 'teapot') geo = new TeapotGeometry(0.8, 12)
+    else if (type === 'star')   geo = new THREE.ExtrudeGeometry(buildStarShape(0.85, 0.38, 5), { depth: 0.55, bevelEnabled: true, bevelSize: 0.05, bevelThickness: 0.05, bevelSegments: 3 })
+    else if (type === 'icosahedron') geo = new THREE.IcosahedronGeometry(0.9, 2)
+    else if (type === 'cylinder') geo = new THREE.CylinderGeometry(0.45, 0.7, 1.4, 6, 1)
+    else if (type === 'cone')   geo = new THREE.ConeGeometry(0.75, 1.5, 5, 1)
+    else                        geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
 
     // Normalise display geometry in-place using bounding sphere
     geo.computeBoundingSphere()
@@ -681,10 +705,10 @@ export default function VisualHull() {
 
         <div className="flex items-center gap-1">
           <span className="text-gray-500 mr-1">Obj</span>
-          {(['torusknot', 'box'] as ObjType[]).map(t => (
+          {(Object.keys(OBJ_LABELS) as ObjType[]).map(t => (
             <button key={t} disabled={!!fileLabel} onClick={() => { setFileLabel(null); setObjType(t) }}
               className={`px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${objType === t && !fileLabel ? 'border-orange-500 text-orange-300 bg-orange-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-              {t === 'torusknot' ? 'Torus' : 'Box'}
+              {OBJ_LABELS[t]}
             </button>
           ))}
         </div>
