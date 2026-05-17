@@ -97,67 +97,62 @@ function buildVoxelGrid(grid: number): VoxelGrid {
 
 // ── Space carving core ────────────────────────────────────────────────────────
 //
-// Each camera renders the object with a position-based shader:
-//   colour = (worldPos + 1.5) / 3.0   →  maps [-1.5, 1.5] to [0, 1]
+// Position shader: colour = (worldPos + 1.5) / 3.0  →  unique per world position.
 //
-// For each voxel at world position p we compute its "expected" colour c_exp.
-// After projecting p into camera k we read the rendered colour c_k at that pixel.
+// For each voxel we compute its "expected" colour (based on position).
+// We then check minDist = min over all kCams cameras of:
+//   dist(rendered_colour_at_pixel, expected_colour)
 //
-// Carve rules (applied for the first kCams cameras):
-//   • outside  — any camera shows background (alpha=0) at that pixel
-//   • interior — no camera shows a pixel whose colour is within `threshold` of c_exp
-//               (every camera sees a different surface in front of this voxel)
+// A voxel is KEPT if minDist ≤ threshold (at least one camera sees it as
+// a surface-consistent point).  Background pixels are skipped.
+//
+// This correctly handles occlusion: a surface voxel always has at least one
+// camera facing it directly → dist ≈ 0.  An interior voxel is always behind
+// some other surface from every camera → dist > voxel_step/3 for all cameras.
 
 function computeSpaceCarving(
   vg: VoxelGrid,
-  dirs: THREE.Vector3[],
   axes: ReturnType<typeof projAxes>[],
   images: Uint8Array[],
   kCams: number,
   resolution: number,
   threshold: number,
-): { inside: Uint8Array; volumes: number[] } {
-  const { centers, grid } = vg
-  const inside = new Uint8Array(centers.length).fill(1)
-  const volumes: number[] = []
+): { inside: Uint8Array; volume: number } {
+  const { centers } = vg
+  const inside = new Uint8Array(centers.length)
 
-  for (let k = 0; k < kCams; k++) {
-    const { u, v } = axes[k]
-    const img = images[k]
+  for (let vi = 0; vi < centers.length; vi++) {
+    const [vx, vy, vz] = centers[vi]
+    const expR = (vx + GRID_R) / (2 * GRID_R)
+    const expG = (vy + GRID_R) / (2 * GRID_R)
+    const expB = (vz + GRID_R) / (2 * GRID_R)
 
-    for (let vi = 0; vi < centers.length; vi++) {
-      if (!inside[vi]) continue
-      const [vx, vy, vz] = centers[vi]
+    let minDist = Infinity
 
-      // Project voxel centre
+    for (let k = 0; k < kCams; k++) {
+      const { u, v } = axes[k]
       const pu = vx*u.x + vy*u.y + vz*u.z
       const pv = vx*v.x + vy*v.y + vz*v.z
-      const px = Math.floor((pu + GRID_R) / (2 * GRID_R) * resolution)
-      const py = Math.floor((pv + GRID_R) / (2 * GRID_R) * resolution)
-
-      if (px < 0 || px >= resolution || py < 0 || py >= resolution) { inside[vi] = 0; continue }
+      const px = Math.floor((pu + GRID_R) / (2*GRID_R) * resolution)
+      const py = Math.floor((pv + GRID_R) / (2*GRID_R) * resolution)
+      if (px < 0 || px >= resolution || py < 0 || py >= resolution) continue
 
       const idx = (py * resolution + px) * 4
-      if (img[idx + 3] < 128) { inside[vi] = 0; continue } // background → outside
+      if (images[k][idx+3] < 128) continue // background → skip this camera
 
-      // Expected colour based on position
-      const expR = (vx + GRID_R) / (2 * GRID_R)
-      const expG = (vy + GRID_R) / (2 * GRID_R)
-      const expB = (vz + GRID_R) / (2 * GRID_R)
-
-      const dr = img[idx  ]/255 - expR
-      const dg = img[idx+1]/255 - expG
-      const db = img[idx+2]/255 - expB
+      const dr = images[k][idx  ]/255 - expR
+      const dg = images[k][idx+1]/255 - expG
+      const db = images[k][idx+2]/255 - expB
       const dist = Math.sqrt(dr*dr + dg*dg + db*db)
-
-      if (dist > threshold) inside[vi] = 0
+      if (dist < minDist) minDist = dist
     }
 
-    let count = 0; for (let vi = 0; vi < centers.length; vi++) count += inside[vi]
-    volumes.push((count / centers.length) * 100)
+    // Keep if any camera sees this voxel as a surface-consistent point
+    inside[vi] = minDist <= threshold ? 1 : 0
   }
 
-  return { inside, volumes }
+  let count = 0; for (let vi = 0; vi < centers.length; vi++) count += inside[vi]
+  return { inside, volume: (count / centers.length) * 100 }
 }
 
 // ── Hull surface mesh ─────────────────────────────────────────────────────────
@@ -282,7 +277,7 @@ export default function SpaceCarving() {
   const [objType, setObjType]   = useState<ObjType>('torusknot')
   const [nCams, setNCams]       = useState(16)
   const [gridSize, setGridSize] = useState(32)
-  const [threshold, setThreshold] = useState(0.12)
+  const [threshold, setThreshold] = useState(0.02)
   const [rtRes, setRtRes]       = useState<64 | 128 | 256>(128)
 
   const [captured, setCaptured]   = useState(false)
@@ -370,18 +365,23 @@ export default function SpaceCarving() {
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.planesGroup.visible = showPlanes }, [showPlanes])
 
   // ── Hull mesh rebuild ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const s = sceneRef.current; if (!s) return
-    clearGroup(s.hullGroup)
+  const rebuildHull = useCallback((kCams: number) => {
+    const s = sceneRef.current
     const vg = voxGridRef.current
-    if (!showHull || !vg || volumes.length === 0) return
-    // Recompute inside from all captured images
-    if (!imagesRef.current || imagesRef.current.length === 0) return
-    const { inside } = computeSpaceCarving(vg, dirsRef.current, axesRef.current, imagesRef.current, imagesRef.current.length, rtRes, threshold)
+    const images = imagesRef.current
+    if (!s || !vg || !images || kCams === 0) return
+    clearGroup(s.hullGroup)
+    const { inside } = computeSpaceCarving(vg, axesRef.current, images, kCams, rtRes, threshold)
     const p = PRESETS[preset]
     const geo = buildHullSurface(vg, inside)
     s.hullGroup.add(new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: p.hullColor, emissive: p.hullEmissive, shininess: 50, transparent: true, opacity: p.hullOpacity, side: THREE.DoubleSide })))
     s.hullGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 15), new THREE.LineBasicMaterial({ color: p.hullColor, transparent: true, opacity: 0.2 })))
+  }, [rtRes, threshold, preset])
+
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    if (!showHull) { clearGroup(s.hullGroup); return }
+    rebuildHull(imagesRef.current?.length ?? 0)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHull])
 
@@ -526,25 +526,28 @@ export default function SpaceCarving() {
     if (!isPlaying || !captured) return
     const images = imagesRef.current
     const vg = voxGridRef.current
-    if (!images || !vg || step >= images.length) { setIsPlaying(false); if (step >= (imagesRef.current?.length ?? 0)) setShowHull(true); return }
+    if (!images || !vg || step >= images.length) {
+      setIsPlaying(false)
+      if (step >= (imagesRef.current?.length ?? 0)) setShowHull(true)
+      return
+    }
 
     const timer = setTimeout(() => {
       const s = sceneRef.current; if (!s) return
 
-      // Highlight active camera
+      // Highlight active camera marker
       const camMesh = s.camerasGroup.children[step] as THREE.Mesh
       if (camMesh) { const m = camMesh.material as THREE.MeshPhongMaterial; m.color.set(0xffffff); m.emissive.set(0xffaa00); m.emissiveIntensity = 1.5 }
 
-      // Recompute carved volume using first step+1 cameras
-      const { inside, volumes: vols } = computeSpaceCarving(vg, dirsRef.current, axesRef.current, images, step + 1, rtRes, threshold)
-      const vol = vols[vols.length - 1]
-      setVolumes(prev => [...prev, vol])
+      // Recompute surface with first step+1 cameras (minDist approach)
+      const { inside, volume } = computeSpaceCarving(vg, axesRef.current, images, step + 1, rtRes, threshold)
+      setVolumes(prev => [...prev, volume])
 
-      // Update hull mesh if already showing
-      if (showHull) {
-        clearGroup(s.hullGroup)
-        const p = PRESETS[preset]
-        const geo = buildHullSurface(vg, inside)
+      // Always rebuild hull during animation so user sees discovery progress
+      clearGroup(s.hullGroup)
+      const p = PRESETS[preset]
+      const geo = buildHullSurface(vg, inside)
+      if (geo.attributes.position.count > 0) {
         s.hullGroup.add(new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: p.hullColor, emissive: p.hullEmissive, shininess: 50, transparent: true, opacity: p.hullOpacity, side: THREE.DoubleSide })))
         s.hullGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 15), new THREE.LineBasicMaterial({ color: p.hullColor, transparent: true, opacity: 0.2 })))
       }
@@ -552,7 +555,7 @@ export default function SpaceCarving() {
       setStep(prev => prev + 1)
     }, 300)
     return () => clearTimeout(timer)
-  }, [isPlaying, step, captured, rtRes, threshold, preset, showHull])
+  }, [isPlaying, step, captured, rtRes, threshold, preset])
 
   // ── Load local file ────────────────────────────────────────────────────────
   const loadLocalFile = useCallback(async (file: File) => {
@@ -706,8 +709,8 @@ export default function SpaceCarving() {
 
         <label className="flex items-center gap-1.5">
           <span className="text-gray-400 whitespace-nowrap">Threshold</span>
-          <input type="range" min={0.02} max={0.5} step={0.01} value={threshold} onChange={e => setThreshold(+e.target.value)} className="w-20 accent-red-400" />
-          <span className="font-mono text-red-300 tabular-nums w-10">{threshold.toFixed(2)}</span>
+          <input type="range" min={0.005} max={0.1} step={0.005} value={threshold} onChange={e => setThreshold(+e.target.value)} className="w-20 accent-red-400" />
+          <span className="font-mono text-red-300 tabular-nums w-12">{threshold.toFixed(3)}</span>
         </label>
 
         <label className="flex items-center gap-1.5">
@@ -771,7 +774,7 @@ export default function SpaceCarving() {
           </div>
 
           <div>
-            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Volume remaining</div>
+            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Surface discovered</div>
             <div className="font-mono text-blue-300 text-lg tabular-nums">{latestVol.toFixed(1)}<span className="text-gray-600 text-xs">%</span></div>
             <div className="text-gray-600 text-[10px]">of bounding sphere</div>
             <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
@@ -782,8 +785,8 @@ export default function SpaceCarving() {
           {volumes.length > 1 && (
             <div>
               <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Δ per camera</div>
-              <div className={`font-mono text-lg tabular-nums ${delta > 0.1 ? 'text-emerald-400' : 'text-red-400'}`}>−{delta.toFixed(3)}%</div>
-              {latestVol > 0 && <div className="text-gray-600 text-[10px]">{((delta/latestVol)*100).toFixed(2)}% of hull</div>}
+              <div className={`font-mono text-lg tabular-nums ${delta < 0 ? 'text-emerald-400' : 'text-gray-500'}`}>{delta < 0 ? `+${(-delta).toFixed(3)}%` : '—'}</div>
+              {delta < 0 && <div className="text-gray-600 text-[10px]">surface growing</div>}
             </div>
           )}
 
@@ -825,9 +828,9 @@ export default function SpaceCarving() {
           )}
 
           <div className="text-gray-600 text-[10px] leading-relaxed border-t border-gray-800 pt-2">
-            Shader: colour = (pos + 1.5) / 3.0<br />
-            Carved if: background OR<br />
-            min‑dist &gt; {threshold.toFixed(2)}
+            colour = (pos+1.5)/3.0<br />
+            keep if min_dist ≤ {threshold.toFixed(3)}<br />
+            <span className="text-gray-700">across all {step} cameras</span>
           </div>
         </div>
       </div>
