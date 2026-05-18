@@ -183,6 +183,34 @@ function extractTriSoup(geo: THREE.BufferGeometry): Float32Array {
 
 const GRID_R = 1.5
 
+// Signed mesh volume via divergence theorem (triangle soup, 9 floats/tri)
+function computeMeshVolume(triPos: Float32Array): number {
+  let v = 0
+  for (let i = 0; i < triPos.length; i += 9) {
+    const ax = triPos[i],   ay = triPos[i+1], az = triPos[i+2]
+    const bx = triPos[i+3], by = triPos[i+4], bz = triPos[i+5]
+    const cx = triPos[i+6], cy = triPos[i+7], cz = triPos[i+8]
+    v += ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)
+  }
+  return Math.abs(v) / 6
+}
+
+// Convergence run colours (cycle through 8 vivid hues)
+const RUN_COLORS = ['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#c77dff','#ff9a3c','#00c9a7','#f72585']
+
+interface ConvergenceRun {
+  id: string
+  label: string           // e.g. "Fibonacci N=16 G=32"
+  strategy: SamplingStrategy
+  nDirs: number
+  gridSize: number
+  color: string
+  // hull volume / original mesh volume × 100 at each step
+  meshRatios: number[]
+  // hull volume / bounding sphere volume × 100 (raw %)
+  sphereRatios: number[]
+}
+
 // Full-spectrum rainbow: t=0→red, t=1→violet
 function rainbow(t: number): THREE.Color { return new THREE.Color().setHSL(t * 0.82, 0.92, 0.58) }
 
@@ -485,7 +513,9 @@ export default function VisualHull() {
   const sceneRef    = useRef<SceneRefs | null>(null)
   const hullDataRef = useRef<HullData | null>(null)
   const highlightRef = useRef<THREE.Mesh | null>(null)
-  const triPosRef   = useRef<Float32Array | null>(null)   // normalised triangle soup
+  const triPosRef       = useRef<Float32Array | null>(null)   // normalised triangle soup
+  const meshVolumeRef   = useRef<number>(1)                    // original mesh volume (world units³)
+  const prevAnimDoneRef = useRef(false)
 
   const [objType, setObjType]   = useState<ObjType>('torusknot')
   const [nDirs, setNDirs]       = useState(16)
@@ -511,6 +541,9 @@ export default function VisualHull() {
   const [showWire, setShowWire]             = useState(false)
   const [showSidebar, setShowSidebar]       = useState(true)
   const [showShortcuts, setShowShortcuts]   = useState(false)
+  const [showChart, setShowChart]           = useState(false)
+  const [convergenceRuns, setConvergenceRuns] = useState<ConvergenceRun[]>([])
+  const [chartMetric, setChartMetric]       = useState<'mesh' | 'sphere'>('mesh')
   const [showParams, setShowParams]         = useState(true)
   const [showViewOpts, setShowViewOpts]     = useState(false)
   const [wireColor, setWireColor]           = useState('#aaaaaa')
@@ -658,6 +691,7 @@ export default function VisualHull() {
     }
 
     s.dirSpheresGroup.visible = showDirSpheres
+    meshVolumeRef.current = computeMeshVolume(triPos) || 1
     hullDataRef.current = computeHullData(triPos, dirs, grid)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -831,6 +865,7 @@ export default function VisualHull() {
       const orig = mesh.userData.origColor as THREE.Color
       if (orig) { mat.color.copy(orig); mat.emissive.copy(orig); mat.emissiveIntensity = 0.35 }
     })
+    prevAnimDoneRef.current = false
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   }, [nDirs])
 
@@ -861,6 +896,30 @@ export default function VisualHull() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [handleReset])
+
+  // ── Save convergence run when animation finishes ───────────────────────────
+  useEffect(() => {
+    const done = (currentStep >= (hullDataRef.current?.dirs.length ?? Infinity) && volumes.length > 0) || stopped
+    if (done && !prevAnimDoneRef.current && volumes.length > 0) {
+      const data = hullDataRef.current
+      if (!data) return
+      const voxelStep = (2 * GRID_R) / gridSize
+      const sphereVol = data.voxCenters.length * voxelStep ** 3  // approx sphere volume
+      const meshVol = meshVolumeRef.current
+      setConvergenceRuns(prev => {
+        const color = RUN_COLORS[prev.length % RUN_COLORS.length]
+        return [...prev, {
+          id: `${Date.now()}`,
+          label: `${STRATEGY_LABELS[strategy][0]}  N=${volumes.length}  G=${gridSize}`,
+          strategy, nDirs: volumes.length, gridSize, color,
+          sphereRatios: volumes,
+          meshRatios: volumes.map(v => (v / 100) * sphereVol / meshVol * 100),
+        }]
+      })
+    }
+    prevAnimDoneRef.current = done
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep, stopped, volumes.length])
 
 
   // ── Shared GLB extraction ─────────────────────────────────────────────────
@@ -1001,6 +1060,16 @@ export default function VisualHull() {
   const voxelSize  = ((2 * GRID_R) / gridSize).toFixed(3)
   const btnToggle  = (active: boolean) => `px-2 py-0.5 rounded border text-xs transition-colors ${active ? 'border-sky-500 text-sky-300 bg-sky-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`
 
+  // ── Convergence chart helpers ──────────────────────────────────────────────
+  const chartData = convergenceRuns.map(r => chartMetric === 'mesh' ? r.meshRatios : r.sphereRatios)
+  const maxSteps  = Math.max(1, ...convergenceRuns.map(r => (chartMetric === 'mesh' ? r.meshRatios : r.sphereRatios).length))
+  const maxVal    = Math.max(1, ...chartData.flat())
+  const minVal    = Math.min(100, ...chartData.flat())
+  const chartW = 560, chartH = 320, padL = 52, padB = 32, padT = 16, padR = 16
+  const iW = chartW - padL - padR, iH = chartH - padT - padB
+  const cx = (step: number) => padL + (step / Math.max(maxSteps - 1, 1)) * iW
+  const cy = (val: number) => padT + iH - ((val - minVal) / Math.max(maxVal - minVal, 1)) * iH
+
   // ── Shared button class helpers ────────────────────────────────────────────
   const btn = (active: boolean, col = 'sky') => `px-3 py-1.5 rounded border text-xs font-medium transition-colors ${
     active
@@ -1084,6 +1153,10 @@ export default function VisualHull() {
             className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">⌨</button>
           <button title="Toggle stats [I]" onClick={() => setShowSidebar(v => !v)}
             className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">▐</button>
+          <button title="Convergence chart" onClick={() => setShowChart(v => !v)}
+            className={`w-8 h-8 flex items-center justify-center rounded border transition-colors ${convergenceRuns.length > 0 ? 'border-indigo-500 text-indigo-300 bg-indigo-900/25' : 'border-gray-700 text-gray-500 hover:border-indigo-500 hover:text-indigo-300'}`}>
+            📈
+          </button>
           <button title="Hull solid [H]" onClick={() => setShowHull(v => !v)} disabled={!animDone}
             className={`px-3 py-1.5 rounded border text-xs font-medium transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-700 text-gray-400 hover:border-teal-600'}`}>
             ◈ Hull
@@ -1193,6 +1266,119 @@ export default function VisualHull() {
                   <span className="text-gray-500">{v}</span>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Convergence chart overlay ──────────────────────────────────── */}
+        {showChart && (
+          <div className="absolute inset-2 z-40 bg-gray-950/97 border border-gray-700 rounded-xl shadow-2xl flex flex-col text-xs overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 shrink-0">
+              <span className="text-gray-300 font-medium">Convergence — porównanie przebiegów</span>
+              <div className="flex items-center gap-1 ml-2">
+                <button onClick={() => setChartMetric('mesh')} className={`px-2 py-0.5 rounded border text-xs transition-colors ${chartMetric === 'mesh' ? 'border-indigo-500 text-indigo-300 bg-indigo-900/25' : 'border-gray-700 text-gray-500 hover:border-gray-500'}`}>
+                  Hull / Bryła [%]
+                </button>
+                <button onClick={() => setChartMetric('sphere')} className={`px-2 py-0.5 rounded border text-xs transition-colors ${chartMetric === 'sphere' ? 'border-indigo-500 text-indigo-300 bg-indigo-900/25' : 'border-gray-700 text-gray-500 hover:border-gray-500'}`}>
+                  Hull / Sfera [%]
+                </button>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <button onClick={() => setConvergenceRuns([])} className="px-2 py-0.5 rounded border border-gray-700 text-gray-500 hover:border-red-600 hover:text-red-400 transition-colors">
+                  Wyczyść wszystkie
+                </button>
+                <button onClick={() => setShowChart(false)} className="w-6 h-6 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">✕</button>
+              </div>
+            </div>
+
+            {/* Chart + legend */}
+            <div className="flex-1 min-h-0 flex overflow-hidden">
+              {convergenceRuns.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center text-gray-600">
+                  Uruchom animację — przebiegi pojawią się tutaj automatycznie
+                </div>
+              ) : (
+                <>
+                  {/* SVG chart */}
+                  <div className="flex-1 min-w-0 p-4 overflow-auto">
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full h-full" style={{ minHeight: 260 }}>
+                      {/* Grid lines Y */}
+                      {[0,.25,.5,.75,1].map(frac => {
+                        const val = minVal + frac * (maxVal - minVal)
+                        const y = cy(val)
+                        return (
+                          <g key={frac}>
+                            <line x1={padL} y1={y} x2={padL + iW} y2={y} stroke="#1f2937" strokeWidth="1" />
+                            <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#6b7280">{val.toFixed(0)}%</text>
+                          </g>
+                        )
+                      })}
+                      {/* Grid lines X */}
+                      {Array.from({ length: Math.min(10, maxSteps) }, (_, k) => {
+                        const step = Math.round(k * (maxSteps - 1) / Math.max(1, Math.min(9, maxSteps - 1)))
+                        const x = cx(step)
+                        return (
+                          <g key={k}>
+                            <line x1={x} y1={padT} x2={x} y2={padT + iH} stroke="#1f2937" strokeWidth="1" />
+                            <text x={x} y={padT + iH + 12} textAnchor="middle" fontSize="9" fill="#6b7280">{step + 1}</text>
+                          </g>
+                        )
+                      })}
+                      {/* Axis labels */}
+                      <text x={padL + iW / 2} y={chartH - 2} textAnchor="middle" fontSize="9" fill="#4b5563">Krok (iteracja)</text>
+                      <text x={10} y={padT + iH / 2} textAnchor="middle" fontSize="9" fill="#4b5563" transform={`rotate(-90,10,${padT + iH / 2})`}>
+                        {chartMetric === 'mesh' ? 'Hull / Bryła [%]' : 'Hull / Sfera [%]'}
+                      </text>
+                      {/* 100% reference line for mesh metric */}
+                      {chartMetric === 'mesh' && minVal <= 100 && maxVal >= 100 && (
+                        <line x1={padL} y1={cy(100)} x2={padL + iW} y2={cy(100)} stroke="#374151" strokeWidth="1" strokeDasharray="4,3" />
+                      )}
+                      {/* Convergence lines */}
+                      {convergenceRuns.map((run, ri) => {
+                        const data = chartMetric === 'mesh' ? run.meshRatios : run.sphereRatios
+                        if (data.length === 0) return null
+                        const pts = data.map((v, i) => `${cx(i)},${cy(v)}`).join(' ')
+                        return (
+                          <polyline key={run.id} points={pts} fill="none"
+                            stroke={run.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                            opacity={0.9} />
+                        )
+                      })}
+                      {/* Endpoint dots */}
+                      {convergenceRuns.map(run => {
+                        const data = chartMetric === 'mesh' ? run.meshRatios : run.sphereRatios
+                        if (data.length === 0) return null
+                        const last = data[data.length - 1]
+                        return <circle key={run.id} cx={cx(data.length - 1)} cy={cy(last)} r="3.5" fill={run.color} opacity="0.9" />
+                      })}
+                    </svg>
+                  </div>
+
+                  {/* Legend */}
+                  <div className="w-56 shrink-0 border-l border-gray-800 p-3 overflow-y-auto flex flex-col gap-1.5">
+                    <div className="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Przebiegi</div>
+                    {[...convergenceRuns].reverse().map(run => {
+                      const data = chartMetric === 'mesh' ? run.meshRatios : run.sphereRatios
+                      const last = data[data.length - 1]
+                      return (
+                        <div key={run.id} className="flex items-start gap-2 group">
+                          <div className="w-3 h-0.5 shrink-0 mt-2 rounded" style={{ background: run.color }} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-gray-300 leading-tight truncate" style={{ fontSize: 10 }}>{run.label}</div>
+                            <div className="text-gray-600" style={{ fontSize: 9 }}>
+                              końcowy: <span style={{ color: run.color }}>{last?.toFixed(1)}%</span>
+                              &nbsp;· {data.length} kroków
+                            </div>
+                          </div>
+                          <button onClick={() => setConvergenceRuns(prev => prev.filter(r => r.id !== run.id))}
+                            className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all shrink-0 text-base leading-none">×</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
