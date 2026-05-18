@@ -677,6 +677,25 @@ export default function VisualHull() {
           allPts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)).multiplyScalar(R * 0.98))
           allCols.push(...rainbow(t / (n - 1)).toArray())
         }
+      } else if (strat === 'icosahedral') {
+        // Draw actual icosahedral edges (geodesic polyhedron wireframe)
+        const detail = n <= 12 ? 0 : n <= 42 ? 1 : n <= 162 ? 2 : n <= 642 ? 3 : 4
+        const icoGeo = new THREE.IcosahedronGeometry(R * 0.98, detail)
+        const edgesGeo = new THREE.EdgesGeometry(icoGeo)
+        icoGeo.dispose()
+        // Rainbow colour per edge vertex based on latitude (Y position)
+        const pos = edgesGeo.attributes.position
+        const cols = new Float32Array(pos.count * 3)
+        for (let i = 0; i < pos.count; i++) {
+          const t = (pos.getY(i) / (R * 0.98) + 1) / 2   // Y∈[-R,R] → t∈[0,1]
+          const col = rainbow(1 - t)                        // top=red, bottom=violet
+          cols[i*3] = col.r; cols[i*3+1] = col.g; cols[i*3+2] = col.b
+        }
+        edgesGeo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3))
+        const icoLines = new THREE.LineSegments(edgesGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }))
+        icoLines.name = 'dir-arcs'
+        s.dirSpheresGroup.add(icoLines)
+        return  // skip the generic line build below
       } else {
         // Other strategies: simple polyline through all directions in index order
         dirs.forEach((d, i) => {
