@@ -572,6 +572,7 @@ export default function VisualHull() {
   const [convergenceRuns, setConvergenceRuns] = useState<ConvergenceRun[]>([])
   const [hiddenRuns, setHiddenRuns]         = useState<string[]>([])
   const [chartMetric, setChartMetric]       = useState<'mesh' | 'sphere'>('mesh')
+  const [chartLog, setChartLog]             = useState(false)
   const [showParams, setShowParams]         = useState(true)
   const [showViewOpts, setShowViewOpts]     = useState(false)
   const [wireColor, setWireColor]           = useState('#aaaaaa')
@@ -1141,7 +1142,25 @@ export default function VisualHull() {
   const maxVal   = rawMax + yPad
   const minVal   = Math.max(0, rawMin - yPad)
   const cx = (step: number) => padL + (step / Math.max(maxSteps - 1, 1)) * iW
-  const cy = (val: number) => padT + iH - ((val - minVal) / Math.max(maxVal - minVal, 0.001)) * iH
+  // Effective log bounds (guard against ≤0)
+  const logFloor = Math.max(0.01, minVal)
+  const logCeil  = Math.max(logFloor * 1.01, maxVal)
+  const cy = (val: number) => {
+    if (!chartLog) return padT + iH - ((val - minVal) / Math.max(maxVal - minVal, 0.001)) * iH
+    const lv  = Math.log10(Math.max(logFloor, val))
+    const lMn = Math.log10(logFloor), lMx = Math.log10(logCeil)
+    return padT + iH - ((lv - lMn) / Math.max(lMx - lMn, 0.001)) * iH
+  }
+  // Y-axis tick values
+  const yTicks: number[] = chartLog
+    ? (() => {
+        const lMn = Math.floor(Math.log10(logFloor)), lMx = Math.ceil(Math.log10(logCeil))
+        const t: number[] = []
+        for (let l = lMn; l <= lMx; l++)
+          for (const m of [1, 2, 5]) { const v = m * 10 ** l; if (v >= logFloor * 0.8 && v <= logCeil * 1.2) t.push(v) }
+        return t
+      })()
+    : [0, .2, .4, .6, .8, 1].map(f => minVal + f * (maxVal - minVal))
 
   // ── Shared button class helpers ────────────────────────────────────────────
   const btn = (active: boolean, col = 'sky') => `px-3 py-1.5 rounded border text-xs font-medium transition-colors ${
@@ -1358,6 +1377,7 @@ export default function VisualHull() {
               <div className="flex items-center gap-1">
                 <button onClick={() => setChartMetric('mesh')} className={`px-2 py-0.5 rounded border transition-colors ${chartMetric === 'mesh' ? 'border-indigo-500 text-indigo-300 bg-indigo-900/30' : 'border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300'}`}>Hull / Bryła</button>
                 <button onClick={() => setChartMetric('sphere')} className={`px-2 py-0.5 rounded border transition-colors ${chartMetric === 'sphere' ? 'border-indigo-500 text-indigo-300 bg-indigo-900/30' : 'border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300'}`}>Hull / Sfera</button>
+                <button onClick={() => setChartLog(v => !v)} title="Półlogarytmiczna oś Y" className={`px-2 py-0.5 rounded border transition-colors font-mono text-[11px] ${chartLog ? 'border-amber-500 text-amber-300 bg-amber-900/25' : 'border-gray-700 text-gray-500 hover:border-amber-600 hover:text-amber-400'}`}>log</button>
               </div>
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={() => { setConvergenceRuns([]); setHiddenRuns([]) }} title="Wyczyść wszystkie" className="px-2 py-0.5 rounded border border-gray-700 text-gray-500 hover:border-red-600 hover:text-red-400 transition-colors">Wyczyść</button>
@@ -1375,12 +1395,14 @@ export default function VisualHull() {
               ) : (
                 <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full h-full" style={{ minHeight: 200 }}>
                   {/* Y grid + labels */}
-                  {[0,.2,.4,.6,.8,1].map(frac => {
-                    const val = minVal + frac * (maxVal - minVal)
+                  {yTicks.map(val => {
+                    const y = cy(val)
+                    if (y < padT - 2 || y > padT + iH + 2) return null
+                    const label = val >= 100 ? val.toFixed(0) : val >= 10 ? val.toFixed(1) : val.toFixed(2)
                     return (
-                      <g key={frac}>
-                        <line x1={padL} y1={cy(val)} x2={padL+iW} y2={cy(val)} stroke="#1e2d3d" strokeWidth="1" />
-                        <text x={padL-5} y={cy(val)+3.5} textAnchor="end" fontSize="9" fill="#64748b">{val.toFixed(0)}%</text>
+                      <g key={val}>
+                        <line x1={padL} y1={y} x2={padL+iW} y2={y} stroke="#1e2d3d" strokeWidth={chartLog ? 0.7 : 1} strokeDasharray={chartLog ? '3,2' : 'none'} />
+                        <text x={padL-5} y={y+3.5} textAnchor="end" fontSize="9" fill="#64748b">{label}%</text>
                       </g>
                     )
                   })}
@@ -1396,7 +1418,7 @@ export default function VisualHull() {
                   })}
                   {/* Axis labels */}
                   <text x={padL+iW/2} y={chartH-2} textAnchor="middle" fontSize="9" fill="#475569">Iteracja</text>
-                  <text x={10} y={padT+iH/2} textAnchor="middle" fontSize="9" fill="#475569" transform={`rotate(-90,10,${padT+iH/2})`}>{chartMetric==='mesh'?'Hull / Bryła [%]':'Hull / Sfera [%]'}</text>
+                  <text x={10} y={padT+iH/2} textAnchor="middle" fontSize="9" fill="#475569" transform={`rotate(-90,10,${padT+iH/2})`}>{chartMetric==='mesh'?'Hull / Bryła [%]':'Hull / Sfera [%]'}{chartLog?' (log)':''}</text>
                   {/* 100% reference */}
                   {chartMetric==='mesh' && minVal<=100 && maxVal>=100 && (
                     <line x1={padL} y1={cy(100)} x2={padL+iW} y2={cy(100)} stroke="#334155" strokeWidth="1.5" strokeDasharray="5,3" />
