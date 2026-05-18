@@ -846,8 +846,10 @@ export default function VisualHull() {
 
       const isLast = step === d.dirs.length - 1
       const deltaStop = stopMode === 'delta' && delta < deltaThreshold && step > 0
-      if (isLast || deltaStop) { setStopped(deltaStop && !isLast); setIsPlaying(false); setShowHull(true) }
-      else setCurrentStep(step + 1)
+      if (isLast || deltaStop) {
+        if (isLast) setCurrentStep(step + 1)   // advance to N/N for correct progress display
+        setStopped(deltaStop && !isLast); setIsPlaying(false); setShowHull(true)
+      } else setCurrentStep(step + 1)
     }, stepDelay)
     return () => clearTimeout(timer)
   }, [isPlaying, currentStep, stepDelay, deltaThreshold, projOpacity, stopped, stopMode, preset])
@@ -899,7 +901,8 @@ export default function VisualHull() {
 
   // ── Save convergence run when animation finishes ───────────────────────────
   useEffect(() => {
-    const done = (currentStep >= (hullDataRef.current?.dirs.length ?? Infinity) && volumes.length > 0) || stopped
+    const nTotal = hullDataRef.current?.dirs.length ?? 0
+    const done = (volumes.length >= nTotal && nTotal > 0) || stopped
     if (done && !prevAnimDoneRef.current && volumes.length > 0) {
       const data = hullDataRef.current
       if (!data) return
@@ -1056,7 +1059,7 @@ export default function VisualHull() {
   const prevVol    = volumes.length > 1 ? volumes[volumes.length - 2] : 100
   const delta      = prevVol - latestVol
   const totalSteps = hullDataRef.current?.dirs.length ?? nDirs
-  const animDone   = (currentStep >= totalSteps && volumes.length > 0) || stopped
+  const animDone   = (volumes.length >= totalSteps && totalSteps > 0) || stopped
   const voxelSize  = ((2 * GRID_R) / gridSize).toFixed(3)
   const btnToggle  = (active: boolean) => `px-2 py-0.5 rounded border text-xs transition-colors ${active ? 'border-sky-500 text-sky-300 bg-sky-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`
 
@@ -1272,7 +1275,7 @@ export default function VisualHull() {
 
         {/* ── Convergence chart overlay ──────────────────────────────────── */}
         {showChart && (
-          <div className="absolute inset-2 z-40 bg-gray-950/97 border border-gray-700 rounded-xl shadow-2xl flex flex-col text-xs overflow-hidden">
+          <div className="absolute right-2 top-2 bottom-2 z-40 w-[540px] max-w-[calc(100%-8px)] bg-gray-950/97 backdrop-blur border border-gray-700 rounded-xl shadow-2xl flex flex-col text-xs overflow-hidden">
             {/* Header */}
             <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 shrink-0">
               <span className="text-gray-300 font-medium">Convergence — porównanie przebiegów</span>
