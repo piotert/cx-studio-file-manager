@@ -15,6 +15,104 @@ import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeome
 const PHI = (1 + Math.sqrt(5)) / 2
 const GOLDEN_ANGLE_RAD = 2 * Math.PI * (2 - PHI)
 
+// ── Sampling strategies ────────────────────────────────────────────────────────
+
+type SamplingStrategy = 'fibonacci' | 'icosahedral' | 'polar' | 'hammersley' | 'random'
+
+const STRATEGY_LABELS: Record<SamplingStrategy, [string, string]> = {
+  fibonacci:   ['Fibonacci',    'złota spirala, najrówniejsza'],
+  icosahedral: ['Platoniczna',  'wierzchołki ikosaedru'],
+  polar:       ['Biegunowa',    'siatka lat/lon'],
+  hammersley:  ['Hammersleya',  'quasi-losowa niskiej rozbieżności'],
+  random:      ['Losowa',       'Monte Carlo'],
+}
+
+function vanDerCorput(n: number): number {
+  let r = 0, f = 1
+  while (n > 0) { f /= 2; r += f * (n & 1); n >>>= 1 }
+  return r
+}
+
+function makeDirs(n: number, strategy: SamplingStrategy): THREE.Vector3[] {
+  switch (strategy) {
+
+    case 'fibonacci': {
+      const dirs: THREE.Vector3[] = []
+      for (let i = 0; i < n; i++) {
+        const y = n === 1 ? 0 : 1 - (2 * i) / (n - 1)
+        const r = Math.sqrt(Math.max(0, 1 - y * y))
+        const theta = GOLDEN_ANGLE_RAD * i
+        dirs.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)).normalize())
+      }
+      return dirs
+    }
+
+    case 'icosahedral': {
+      // Use successive icosahedron subdivisions; vertex counts: 12, 42, 162, 642, 2562
+      const detail = n <= 12 ? 0 : n <= 42 ? 1 : n <= 162 ? 2 : n <= 642 ? 3 : 4
+      const geo = new THREE.IcosahedronGeometry(1, detail)
+      const pos = geo.attributes.position
+      const seen = new Set<string>()
+      const pts: THREE.Vector3[] = []
+      for (let i = 0; i < pos.count; i++) {
+        const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).normalize()
+        const key = `${v.x.toFixed(4)}|${v.y.toFixed(4)}|${v.z.toFixed(4)}`
+        if (!seen.has(key)) { seen.add(key); pts.push(v) }
+      }
+      geo.dispose()
+      // Sort top→bottom so index order traces the geodesic sphere latitude bands
+      pts.sort((a, b) => b.y - a.y)
+      return pts.slice(0, Math.min(n, pts.length))
+    }
+
+    case 'polar': {
+      // Equal-area latitude bands (more uniform than naive lat/lon)
+      const pts: THREE.Vector3[] = []
+      const nBands = Math.max(2, Math.round(Math.sqrt(n / 2)))
+      for (let lat = 0; lat < nBands && pts.length < n; lat++) {
+        const phi = Math.PI * (lat + 0.5) / nBands
+        const nLon = Math.max(1, Math.round(Math.sin(phi) * nBands * 2))
+        for (let lon = 0; lon < nLon && pts.length < n; lon++) {
+          const theta = (2 * Math.PI * lon) / nLon + (lat % 2 ? Math.PI / nLon : 0) // stagger
+          pts.push(new THREE.Vector3(
+            Math.sin(phi) * Math.cos(theta),
+            Math.cos(phi),
+            Math.sin(phi) * Math.sin(theta)
+          ))
+        }
+      }
+      return pts.slice(0, n)
+    }
+
+    case 'hammersley': {
+      // Hammersley quasi-random — base-2 Van der Corput × uniform azimuth
+      return Array.from({ length: n }, (_, i) => {
+        const ri = vanDerCorput(i + 1)          // ∈ (0,1), low-discrepancy
+        const phi = Math.acos(1 - 2 * ri)       // uniform on sphere
+        const theta = 2 * Math.PI * i / n
+        return new THREE.Vector3(
+          Math.sin(phi) * Math.cos(theta),
+          Math.cos(phi),
+          Math.sin(phi) * Math.sin(theta)
+        )
+      })
+    }
+
+    case 'random': {
+      // Uniform random via rejection-free trig method
+      return Array.from({ length: n }, () => {
+        const phi = Math.acos(1 - 2 * Math.random())
+        const theta = 2 * Math.PI * Math.random()
+        return new THREE.Vector3(
+          Math.sin(phi) * Math.cos(theta),
+          Math.cos(phi),
+          Math.sin(phi) * Math.sin(theta)
+        )
+      })
+    }
+  }
+}
+
 function makeFibDirs(n: number): THREE.Vector3[] {
   const dirs: THREE.Vector3[] = []
   for (let i = 0; i < n; i++) {
@@ -391,6 +489,7 @@ export default function VisualHull() {
 
   const [objType, setObjType]   = useState<ObjType>('torusknot')
   const [nDirs, setNDirs]       = useState(16)
+  const [strategy, setStrategy] = useState<SamplingStrategy>('fibonacci')
   const [gridSize, setGridSize] = useState(32)
   const [stopMode, setStopMode] = useState<StopMode>('delta')
   const [deltaThreshold, setDeltaThreshold] = useState(0.5)
@@ -506,16 +605,15 @@ export default function VisualHull() {
     })
   }, [wireColor, wireWidth])
 
-  // ── Direction spheres + geodesic arcs + hull computation ─────────────────
-  const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number) => {
+  // ── Direction spheres + connection lines + hull computation ──────────────
+  const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number, strat: SamplingStrategy) => {
     const s = sceneRef.current; if (!s) return
     clearGroup(s.dirSpheresGroup)
-    const dirs = makeFibDirs(n)
-    const R = 1.55 // radius of direction sphere markers
+    const dirs = makeDirs(n, strat)
+    const R = 1.55
 
-    // Coloured point markers (full rainbow)
     dirs.forEach((d, i) => {
-      const t = i / Math.max(n - 1, 1)
+      const t = i / Math.max(dirs.length - 1, 1)
       const col = rainbow(t)
       const sphere = new THREE.Mesh(
         new THREE.SphereGeometry(0.045, 8, 6),
@@ -526,26 +624,37 @@ export default function VisualHull() {
       s.dirSpheresGroup.add(sphere)
     })
 
-    // Continuous Fibonacci spiral — fine-sample the golden-angle parametric curve
+    // Connection line — Fibonacci gets continuous spiral, others connect in index order
     if (dirs.length >= 2) {
-      const FINE = 16  // samples per unit interval between consecutive Fibonacci points
-      const total = Math.floor((n - 1) * FINE)
       const allPts: THREE.Vector3[] = []
       const allCols: number[] = []
-      for (let k = 0; k <= total; k++) {
-        const t = k / FINE  // continuous index 0…n-1
-        const tc = Math.min(t, n - 1)
-        const y = n === 1 ? 0 : 1 - (2 * tc) / (n - 1)
-        const r = Math.sqrt(Math.max(0, 1 - y * y))
-        const theta = GOLDEN_ANGLE_RAD * tc
-        allPts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)).multiplyScalar(R * 0.98))
-        allCols.push(...rainbow(t / (n - 1)).toArray())
+
+      if (strat === 'fibonacci') {
+        // Continuous parametric spiral (20 fine samples per integer step)
+        const FINE = 20
+        const total = Math.floor((n - 1) * FINE)
+        for (let k = 0; k <= total; k++) {
+          const t = k / FINE
+          const tc = Math.min(t, n - 1)
+          const y = n === 1 ? 0 : 1 - (2 * tc) / (n - 1)
+          const r = Math.sqrt(Math.max(0, 1 - y * y))
+          const theta = GOLDEN_ANGLE_RAD * tc
+          allPts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)).multiplyScalar(R * 0.98))
+          allCols.push(...rainbow(t / (n - 1)).toArray())
+        }
+      } else {
+        // Other strategies: simple polyline through all directions in index order
+        dirs.forEach((d, i) => {
+          allPts.push(d.clone().multiplyScalar(R * 0.98))
+          allCols.push(...rainbow(i / Math.max(dirs.length - 1, 1)).toArray())
+        })
       }
+
       const geo = new THREE.BufferGeometry().setFromPoints(allPts)
       geo.setAttribute('color', new THREE.Float32BufferAttribute(allCols, 3))
-      const spiralLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6 }))
-      spiralLine.name = 'dir-arcs'
-      s.dirSpheresGroup.add(spiralLine)
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: strat === 'fibonacci' ? 0.6 : 0.35 }))
+      line.name = 'dir-arcs'
+      s.dirSpheresGroup.add(line)
     }
 
     s.dirSpheresGroup.visible = showDirSpheres
@@ -615,7 +724,7 @@ export default function VisualHull() {
           const duckWire = makeWireFromTriPos(triPos, wireColor, wireWidth)
           duckWire.visible = showWire
           sc2.objectGroup.add(gltf.scene, duckWire)
-          setupDirsAndHull(triPos, grid, n)
+          setupDirsAndHull(triPos, grid, n, strategy)
           setLoadingFile(false)
         },
         undefined,
@@ -645,8 +754,8 @@ export default function VisualHull() {
     triPosRef.current = triPos
 
     addMeshToScene(geo)
-    setupDirsAndHull(triPos, grid, n)
-  }, [addMeshToScene, setupDirsAndHull, showBody])
+    setupDirsAndHull(triPos, grid, n, strategy)
+  }, [addMeshToScene, setupDirsAndHull, showBody, strategy])
 
   useEffect(() => {
     if (fileLabel) return
@@ -656,17 +765,17 @@ export default function VisualHull() {
     buildBuiltIn(objType, gridSize, nDirs)
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objType, nDirs, gridSize])
+  }, [objType, nDirs, gridSize, strategy])
 
   useEffect(() => {
     if (!fileLabel || !triPosRef.current) return
     const s = sceneRef.current; if (!s) return
     clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
     highlightRef.current = null
-    setupDirsAndHull(triPosRef.current, gridSize, nDirs)
+    setupDirsAndHull(triPosRef.current, gridSize, nDirs, strategy)
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nDirs, gridSize])
+  }, [nDirs, gridSize, strategy])
 
   // ── Animation ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -822,7 +931,7 @@ export default function VisualHull() {
         wl1.visible = showWire; s.objectGroup.add(gltf.scene, wl1)
       }
 
-      setupDirsAndHull(triPosRef.current!, gridSize, nDirs)
+      setupDirsAndHull(triPosRef.current!, gridSize, nDirs, strategy)
       setFileLabel(file.name)
       setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
     } catch (err) { console.error('Load error', err) }
@@ -876,7 +985,7 @@ export default function VisualHull() {
         wl2.visible = showWire; s.objectGroup.add(gltf.scene, wl2)
       }
 
-      setupDirsAndHull(triPosRef.current!, gridSize, nDirs)
+      setupDirsAndHull(triPosRef.current!, gridSize, nDirs, strategy)
       setFileLabel(label)
       setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
     } catch (err) { console.error('Load error', err) }
@@ -996,6 +1105,15 @@ export default function VisualHull() {
             <input type="range" min={3} max={120} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-24 accent-orange-500" />
             <span className="font-mono text-orange-300 w-6 tabular-nums">{nDirs}</span>
           </label>
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-gray-500 whitespace-nowrap">Strategia</span>
+            {(Object.keys(STRATEGY_LABELS) as SamplingStrategy[]).map(s => (
+              <button key={s} onClick={() => setStrategy(s)} title={STRATEGY_LABELS[s][1]}
+                className={`px-2 py-1 rounded border text-xs font-medium transition-colors ${strategy === s ? 'border-orange-500 text-orange-300 bg-orange-900/25' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200'}`}>
+                {STRATEGY_LABELS[s][0]}
+              </button>
+            ))}
+          </div>
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500 whitespace-nowrap">Voxel</span>
             <input type="range" min={12} max={192} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
