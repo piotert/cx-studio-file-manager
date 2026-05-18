@@ -839,21 +839,27 @@ export default function VisualHull() {
     setupDirsAndHull(triPos, grid, n, strategy)
   }, [addMeshToScene, setupDirsAndHull, showBody, strategy])
 
+  // Effect 1: rebuilds geometry + hull when the object TYPE changes
+  //   — does NOT run when only sliders (grid/dirs/strategy) change
+  //   — avoids stale closure on buildBuiltIn by not mixing with slider deps
   useEffect(() => {
     if (fileLabel) return
     const s = sceneRef.current; if (!s) return
     clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
-    highlightRef.current = null
+    highlightRef.current = null; prevAnimDoneRef.current = false
     buildBuiltIn(objType, gridSize, nDirs)
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objType, nDirs, gridSize, strategy])
+  }, [objType])
 
+  // Effect 2: recomputes hull only when sliders / strategy change
+  //   — works for BOTH built-in objects and loaded files (uses triPosRef)
+  //   — setupDirsAndHull has stable identity (deps=[]), no stale closure risk
   useEffect(() => {
-    if (!fileLabel || !triPosRef.current) return
+    if (!triPosRef.current) return   // geometry not ready yet (initial render before Effect 1)
     const s = sceneRef.current; if (!s) return
     clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup)
-    highlightRef.current = null
+    highlightRef.current = null; prevAnimDoneRef.current = false
     setupDirsAndHull(triPosRef.current, gridSize, nDirs, strategy)
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
