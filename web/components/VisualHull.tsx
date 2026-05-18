@@ -526,27 +526,26 @@ export default function VisualHull() {
       s.dirSpheresGroup.add(sphere)
     })
 
-    // Geodesic arcs along sphere surface connecting consecutive directions
+    // Continuous Fibonacci spiral — fine-sample the golden-angle parametric curve
     if (dirs.length >= 2) {
-      const ARC_SEG = 14
+      const FINE = 16  // samples per unit interval between consecutive Fibonacci points
+      const total = Math.floor((n - 1) * FINE)
       const allPts: THREE.Vector3[] = []
       const allCols: number[] = []
-      for (let i = 0; i < dirs.length - 1; i++) {
-        const t1 = i / (dirs.length - 1), t2 = (i + 1) / (dirs.length - 1)
-        const col1 = rainbow(t1), col2 = rainbow(t2)
-        const arc = geodesicArc(dirs[i].clone().normalize(), dirs[i + 1].clone().normalize(), ARC_SEG, R * 0.98)
-        arc.slice(i === 0 ? 0 : 1).forEach((pt, j) => {
-          const tArc = (j + (i === 0 ? 0 : 1)) / ARC_SEG
-          const col = col1.clone().lerp(col2, tArc)
-          allPts.push(pt.clone())
-          allCols.push(col.r, col.g, col.b)
-        })
+      for (let k = 0; k <= total; k++) {
+        const t = k / FINE  // continuous index 0…n-1
+        const tc = Math.min(t, n - 1)
+        const y = n === 1 ? 0 : 1 - (2 * tc) / (n - 1)
+        const r = Math.sqrt(Math.max(0, 1 - y * y))
+        const theta = GOLDEN_ANGLE_RAD * tc
+        allPts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)).multiplyScalar(R * 0.98))
+        allCols.push(...rainbow(t / (n - 1)).toArray())
       }
       const geo = new THREE.BufferGeometry().setFromPoints(allPts)
       geo.setAttribute('color', new THREE.Float32BufferAttribute(allCols, 3))
-      const arc = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }))
-      arc.name = 'dir-arcs'
-      s.dirSpheresGroup.add(arc)
+      const spiralLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6 }))
+      spiralLine.name = 'dir-arcs'
+      s.dirSpheresGroup.add(spiralLine)
     }
 
     s.dirSpheresGroup.visible = showDirSpheres
@@ -677,9 +676,20 @@ export default function VisualHull() {
     const timer = setTimeout(() => {
       const s = sceneRef.current; if (!s || !hullDataRef.current) return
       const d = hullDataRef.current, step = currentStep
-      if (highlightRef.current) { const m = highlightRef.current.material as THREE.MeshPhongMaterial; m.emissiveIntensity = 0.35; const orig = highlightRef.current.userData.origColor as THREE.Color; if (orig) { m.color.copy(orig); m.emissive.copy(orig) } }
+      if (highlightRef.current) {
+        const m = highlightRef.current.material as THREE.MeshPhongMaterial
+        m.emissiveIntensity = 0.35
+        const orig = highlightRef.current.userData.origColor as THREE.Color
+        if (orig) { m.color.copy(orig); m.emissive.copy(orig) }
+        highlightRef.current.scale.setScalar(1.0)
+      }
       const dirSphere = s.dirSpheresGroup.children[step] as THREE.Mesh
-      if (dirSphere) { const m = dirSphere.material as THREE.MeshPhongMaterial; m.color.set(0xffffff); m.emissive.set(0xffaa00); m.emissiveIntensity = 1.0; highlightRef.current = dirSphere }
+      if (dirSphere?.isMesh) {
+        const m = dirSphere.material as THREE.MeshPhongMaterial
+        m.color.set(0xffffff); m.emissive.set(0xffffff); m.emissiveIntensity = 5.0
+        dirSphere.scale.setScalar(2.5)
+        highlightRef.current = dirSphere
+      }
       s.projectionsGroup.add(buildProjectionMesh(d.masks[step], d.grid, d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor))
       const vol = d.volumes[step], prevVol = step > 0 ? d.volumes[step - 1] : 100, delta = prevVol - vol
       setVolumes(prev => [...prev, vol])
@@ -707,6 +717,7 @@ export default function VisualHull() {
     if (s) s.dirSpheresGroup.children.forEach(c => {
       if (c.name === 'dir-arcs') return
       const mesh = c as THREE.Mesh; if (!mesh.isMesh) return
+      mesh.scale.setScalar(1.0)
       const mat = mesh.material as THREE.MeshPhongMaterial
       const orig = mesh.userData.origColor as THREE.Color
       if (orig) { mat.color.copy(orig); mat.emissive.copy(orig); mat.emissiveIntensity = 0.35 }
@@ -987,8 +998,8 @@ export default function VisualHull() {
           </label>
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500 whitespace-nowrap">Voxel</span>
-            <input type="range" min={12} max={128} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
-            <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? ' ⚠' : ''}</span>
+            <input type="range" min={12} max={192} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
+            <span className={`font-mono tabular-nums w-12 ${gridSize > 128 ? 'text-red-400' : gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 128 ? ' ⚠⚠' : gridSize > 64 ? ' ⚠' : ''}</span>
           </label>
           <div className="flex items-center gap-1">
             <span className="text-gray-500">Stop</span>

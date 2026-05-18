@@ -19,20 +19,14 @@ function makeFibonacciPoints(n: number): THREE.Vector3[] {
   return pts
 }
 
-// SLERP-based geodesic arc between two unit vectors
-function geodesicArc(a: THREE.Vector3, b: THREE.Vector3, segments: number): THREE.Vector3[] {
-  const dot = Math.max(-1, Math.min(1, a.dot(b)))
-  const theta = Math.acos(dot)
-  if (theta < 1e-6) return [a.clone(), b.clone()]
-  const sinTheta = Math.sin(theta)
-  const pts: THREE.Vector3[] = []
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments
-    const w1 = Math.sin((1 - t) * theta) / sinTheta
-    const w2 = Math.sin(t * theta) / sinTheta
-    pts.push(new THREE.Vector3(a.x * w1 + b.x * w2, a.y * w1 + b.y * w2, a.z * w1 + b.z * w2))
-  }
-  return pts
+// Continuous Fibonacci spiral parametrized by fractional index t ∈ [0, n-1]
+// This IS the actual golden-angle spiral — sampling it finely gives a smooth curve
+function fibSpiralPt(t: number, n: number): THREE.Vector3 {
+  const tc = Math.max(0, Math.min(n - 1, t))
+  const y = n === 1 ? 0 : 1 - (2 * tc) / (n - 1)
+  const r = Math.sqrt(Math.max(0, 1 - y * y))
+  const theta = GOLDEN_ANGLE_RAD * tc
+  return new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta))
 }
 
 // Full-spectrum rainbow colour: t=0 → red, t=1 → violet
@@ -132,28 +126,20 @@ export default function FibonacciSphere() {
 
     if (pts.length >= 2) {
       if (showArcs) {
-        // Geodesic arcs along sphere surface with per-vertex rainbow colours
-        const ARC_SEG = 16
+        // Continuous Fibonacci spiral — fine-sample the parametric spiral curve
+        // Each unit step corresponds to one full golden-angle turn, 20 samples per step
+        const FINE = 20
+        const total = Math.floor((n - 1) * FINE)
         const allPts: THREE.Vector3[] = []
         const allCols: number[] = []
-
-        for (let i = 0; i < pts.length - 1; i++) {
-          const t1 = i / (pts.length - 1)
-          const t2 = (i + 1) / (pts.length - 1)
-          const col1 = rainbow(t1), col2 = rainbow(t2)
-          const arc = geodesicArc(pts[i].clone().normalize(), pts[i + 1].clone().normalize(), ARC_SEG)
-          const startJ = i === 0 ? 0 : 1 // skip duplicate endpoint
-          arc.slice(startJ).forEach((pt, j) => {
-            const tArc = (j + (i === 0 ? 0 : 1)) / ARC_SEG
-            const col = col1.clone().lerp(col2, tArc)
-            allPts.push(pt.clone())
-            allCols.push(col.r, col.g, col.b)
-          })
+        for (let k = 0; k <= total; k++) {
+          const t = k / FINE          // continuous Fibonacci index 0…n-1
+          allPts.push(fibSpiralPt(t, n))
+          allCols.push(...rainbow(t / (n - 1)).toArray())
         }
-
         const geo = new THREE.BufferGeometry().setFromPoints(allPts)
         geo.setAttribute('color', new THREE.Float32BufferAttribute(allCols, 3))
-        s.linesGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 })))
+        s.linesGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.75 })))
       } else {
         // Fallback: straight chord segments, single colour
         const posArr: number[] = []
