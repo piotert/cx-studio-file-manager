@@ -85,6 +85,25 @@ function extractTriSoup(geo: THREE.BufferGeometry): Float32Array {
 
 const GRID_R = 1.5
 
+// Full-spectrum rainbow: t=0→red, t=1→violet
+function rainbow(t: number): THREE.Color { return new THREE.Color().setHSL(t * 0.82, 0.92, 0.58) }
+
+// SLERP-based geodesic arc between two unit vectors (radius r)
+function geodesicArc(a: THREE.Vector3, b: THREE.Vector3, segments: number, r = 1): THREE.Vector3[] {
+  const dot = Math.max(-1, Math.min(1, a.dot(b)))
+  const theta = Math.acos(dot)
+  if (theta < 1e-6) return [a.clone().multiplyScalar(r), b.clone().multiplyScalar(r)]
+  const sinTheta = Math.sin(theta)
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
+    const w1 = Math.sin((1 - t) * theta) / sinTheta
+    const w2 = Math.sin(t * theta) / sinTheta
+    pts.push(new THREE.Vector3(a.x * w1 + b.x * w2, a.y * w1 + b.y * w2, a.z * w1 + b.z * w2).multiplyScalar(r))
+  }
+  return pts
+}
+
 function rasterizeTriangle(
   pu0: number, pv0: number,
   pu1: number, pv1: number,
@@ -487,18 +506,49 @@ export default function VisualHull() {
     })
   }, [wireColor, wireWidth])
 
-  // ── Direction spheres + hull computation ──────────────────────────────────
+  // ── Direction spheres + geodesic arcs + hull computation ─────────────────
   const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number) => {
     const s = sceneRef.current; if (!s) return
     clearGroup(s.dirSpheresGroup)
     const dirs = makeFibDirs(n)
+    const R = 1.55 // radius of direction sphere markers
+
+    // Coloured point markers (full rainbow)
     dirs.forEach((d, i) => {
       const t = i / Math.max(n - 1, 1)
-      const col = new THREE.Color().setHSL(0.08 + t * 0.05, 0.9, 0.55)
-      const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 0.3 }))
-      sphere.position.copy(d.clone().multiplyScalar(1.55))
+      const col = rainbow(t)
+      const sphere = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045, 8, 6),
+        new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 0.35 })
+      )
+      sphere.position.copy(d.clone().multiplyScalar(R))
+      sphere.userData.origColor = col.clone()
       s.dirSpheresGroup.add(sphere)
     })
+
+    // Geodesic arcs along sphere surface connecting consecutive directions
+    if (dirs.length >= 2) {
+      const ARC_SEG = 14
+      const allPts: THREE.Vector3[] = []
+      const allCols: number[] = []
+      for (let i = 0; i < dirs.length - 1; i++) {
+        const t1 = i / (dirs.length - 1), t2 = (i + 1) / (dirs.length - 1)
+        const col1 = rainbow(t1), col2 = rainbow(t2)
+        const arc = geodesicArc(dirs[i].clone().normalize(), dirs[i + 1].clone().normalize(), ARC_SEG, R * 0.98)
+        arc.slice(i === 0 ? 0 : 1).forEach((pt, j) => {
+          const tArc = (j + (i === 0 ? 0 : 1)) / ARC_SEG
+          const col = col1.clone().lerp(col2, tArc)
+          allPts.push(pt.clone())
+          allCols.push(col.r, col.g, col.b)
+        })
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(allPts)
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(allCols, 3))
+      const arc = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }))
+      arc.name = 'dir-arcs'
+      s.dirSpheresGroup.add(arc)
+    }
+
     s.dirSpheresGroup.visible = showDirSpheres
     hullDataRef.current = computeHullData(triPos, dirs, grid)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -627,7 +677,7 @@ export default function VisualHull() {
     const timer = setTimeout(() => {
       const s = sceneRef.current; if (!s || !hullDataRef.current) return
       const d = hullDataRef.current, step = currentStep
-      if (highlightRef.current) { const m = highlightRef.current.material as THREE.MeshPhongMaterial; m.emissiveIntensity = 0.3; m.color.setHSL(0.08, 0.9, 0.55) }
+      if (highlightRef.current) { const m = highlightRef.current.material as THREE.MeshPhongMaterial; m.emissiveIntensity = 0.35; const orig = highlightRef.current.userData.origColor as THREE.Color; if (orig) { m.color.copy(orig); m.emissive.copy(orig) } }
       const dirSphere = s.dirSpheresGroup.children[step] as THREE.Mesh
       if (dirSphere) { const m = dirSphere.material as THREE.MeshPhongMaterial; m.color.set(0xffffff); m.emissive.set(0xffaa00); m.emissiveIntensity = 1.0; highlightRef.current = dirSphere }
       s.projectionsGroup.add(buildProjectionMesh(d.masks[step], d.grid, d.dirs[step], d.axes[step], 1.75, projOpacity, PRESETS[preset].projColor))
@@ -654,10 +704,12 @@ export default function VisualHull() {
     const s = sceneRef.current
     if (s) { clearGroup(s.projectionsGroup); clearGroup(s.hullMeshGroup) }
     highlightRef.current = null
-    if (s) s.dirSpheresGroup.children.forEach((c, i) => {
-      const mat = (c as THREE.Mesh).material as THREE.MeshPhongMaterial
-      const col = new THREE.Color().setHSL(0.08 + (nDirs > 1 ? i/(nDirs-1) : 0.5) * 0.05, 0.9, 0.55)
-      mat.color.copy(col); mat.emissive.copy(col); mat.emissiveIntensity = 0.3
+    if (s) s.dirSpheresGroup.children.forEach(c => {
+      if (c.name === 'dir-arcs') return
+      const mesh = c as THREE.Mesh; if (!mesh.isMesh) return
+      const mat = mesh.material as THREE.MeshPhongMaterial
+      const orig = mesh.userData.origColor as THREE.Color
+      if (orig) { mat.color.copy(orig); mat.emissive.copy(orig); mat.emissiveIntensity = 0.35 }
     })
     setCurrentStep(0); setVolumes([]); setIsPlaying(false); setStopped(false); setShowHull(false)
   }, [nDirs])
