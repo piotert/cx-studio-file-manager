@@ -6,6 +6,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { parseGeometry, type ThreeGeometryJson } from './ThreeJsonViewer'
 import { TeapotGeometry } from 'three/examples/jsm/geometries/TeapotGeometry.js'
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 
 // ── Fibonacci sphere ───────────────────────────────────────────────────────────
 
@@ -318,6 +321,26 @@ const OBJ_LABELS: Record<ObjType, string> = {
   star: 'Star', icosahedron: 'Ico', cylinder: 'Cylinder', cone: 'Cone', duck: '🦆 Duck',
 }
 
+// Build wireframe overlay using LineMaterial (true pixel-width lines)
+function makeWireMesh(geo: THREE.BufferGeometry, color: string, width: number): LineSegments2 {
+  const wGeo = new THREE.WireframeGeometry(geo)
+  const lsGeo = new LineSegmentsGeometry()
+  lsGeo.setPositions(wGeo.attributes.position.array as Float32Array)
+  wGeo.dispose()
+  const mat = new LineMaterial({ color: new THREE.Color(color).getHex(), linewidth: width, transparent: true, opacity: 0.55 })
+  const ls = new LineSegments2(lsGeo, mat)
+  ls.name = 'obj-wire'
+  return ls
+}
+
+function makeWireFromTriPos(triPos: Float32Array, color: string, width: number): LineSegments2 {
+  const tmpGeo = new THREE.BufferGeometry()
+  tmpGeo.setAttribute('position', new THREE.Float32BufferAttribute(triPos, 3))
+  const ls = makeWireMesh(tmpGeo, color, width)
+  tmpGeo.dispose()
+  return ls
+}
+
 function buildStarShape(outerR: number, innerR: number, n: number): THREE.Shape {
   const shape = new THREE.Shape()
   for (let i = 0; i < n * 2; i++) {
@@ -370,6 +393,10 @@ export default function VisualHull() {
   const [showWire, setShowWire]             = useState(false)
   const [showSidebar, setShowSidebar]       = useState(true)
   const [showShortcuts, setShowShortcuts]   = useState(false)
+  const [showParams, setShowParams]         = useState(true)
+  const [showViewOpts, setShowViewOpts]     = useState(false)
+  const [wireColor, setWireColor]           = useState('#aaaaaa')
+  const [wireWidth, setWireWidth]           = useState(0.8)
 
   const [supaFiles, setSupaFiles]   = useState<FileItem[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
@@ -404,7 +431,13 @@ export default function VisualHull() {
     const resize = () => { const w = mount.clientWidth, h = mount.clientHeight; if (!w || !h) return; camera.aspect = w/h; camera.updateProjectionMatrix(); renderer.setSize(w, h) }
     resize(); const ro = new ResizeObserver(resize); ro.observe(mount)
     let rafId = 0
-    const animate = () => { rafId = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera) }
+    const animate = () => {
+      rafId = requestAnimationFrame(animate); controls.update()
+      // Keep LineMaterial resolution in sync for correct pixel-width wire lines
+      const w = mount.clientWidth || 1, h = mount.clientHeight || 1
+      objectGroup.traverse(c => { if (c.name === 'obj-wire' && (c as LineSegments2).isLineSegments2) (c as LineSegments2).material.resolution.set(w, h) })
+      renderer.render(scene, camera)
+    }
     animate()
     sceneRef.current = { renderer, scene, camera, controls, rafId, objectGroup, dirSpheresGroup, projectionsGroup, hullMeshGroup, refSphere }
     return () => { cancelAnimationFrame(rafId); ro.disconnect(); controls.dispose(); renderer.dispose(); if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement); sceneRef.current = null }
@@ -444,6 +477,15 @@ export default function VisualHull() {
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.projectionsGroup.visible = showProjections }, [showProjections])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.refSphere.visible = showRefSphere }, [showRefSphere])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-wire') c.visible = showWire }) }, [showWire])
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.objectGroup.traverse(c => {
+      if (c.name === 'obj-wire' && (c as LineSegments2).isLineSegments2) {
+        const mat = (c as LineSegments2).material as LineMaterial
+        mat.color.set(wireColor); mat.linewidth = wireWidth
+      }
+    })
+  }, [wireColor, wireWidth])
 
   // ── Direction spheres + hull computation ──────────────────────────────────
   const setupDirsAndHull = useCallback((triPos: Float32Array, grid: number, n: number) => {
@@ -472,11 +514,11 @@ export default function VisualHull() {
     mesh.visible = showBody
     const edges = Object.assign(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: p.edgeColor, transparent: true, opacity: 0.4 })), { name: 'obj-edges' })
     edges.visible = showEdges
-    const wire = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+    const wire = makeWireMesh(geo, wireColor, wireWidth)
     wire.visible = showWire
     s.objectGroup.add(mesh, edges, wire)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, showBody, showEdges, showWire])
+  }, [preset, showBody, showEdges, showWire, wireColor, wireWidth])
 
   // ── Built-in object ────────────────────────────────────────────────────────
   const buildBuiltIn = useCallback((type: ObjType, grid: number, n: number) => {
@@ -521,8 +563,7 @@ export default function VisualHull() {
               m.material = new THREE.MeshPhongMaterial({ color: 0xf5c518, emissive: 0x221100, shininess: 90, transparent: true, opacity: 0.92 })
             }
           })
-          const duckWireGeo = new THREE.BufferGeometry(); duckWireGeo.setAttribute('position', new THREE.Float32BufferAttribute(triPos, 3))
-          const duckWire = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(duckWireGeo), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+          const duckWire = makeWireFromTriPos(triPos, wireColor, wireWidth)
           duckWire.visible = showWire
           sc2.objectGroup.add(gltf.scene, duckWire)
           setupDirsAndHull(triPos, grid, n)
@@ -714,8 +755,7 @@ export default function VisualHull() {
             m.material = new THREE.MeshPhongMaterial({ color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88 })
           }
         })
-        const wg1 = new THREE.BufferGeometry(); wg1.setAttribute('position', new THREE.Float32BufferAttribute(triPosRef.current!, 3))
-        const wl1 = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(wg1), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+        const wl1 = makeWireFromTriPos(triPosRef.current!, wireColor, wireWidth)
         wl1.visible = showWire; s.objectGroup.add(gltf.scene, wl1)
       }
 
@@ -769,8 +809,7 @@ export default function VisualHull() {
             m.material = new THREE.MeshPhongMaterial({ color: p.objColor, emissive: p.objEmissive, shininess: 70, transparent: true, opacity: 0.88 })
           }
         })
-        const wg2 = new THREE.BufferGeometry(); wg2.setAttribute('position', new THREE.Float32BufferAttribute(triPosRef.current!, 3))
-        const wl2 = Object.assign(new THREE.LineSegments(new THREE.WireframeGeometry(wg2), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })), { name: 'obj-wire' })
+        const wl2 = makeWireFromTriPos(triPosRef.current!, wireColor, wireWidth)
         wl2.visible = showWire; s.objectGroup.add(gltf.scene, wl2)
       }
 
@@ -790,41 +829,55 @@ export default function VisualHull() {
   const voxelSize  = ((2 * GRID_R) / gridSize).toFixed(3)
   const btnToggle  = (active: boolean) => `px-2 py-0.5 rounded border text-xs transition-colors ${active ? 'border-sky-500 text-sky-300 bg-sky-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`
 
+  // ── Shared button class helpers ────────────────────────────────────────────
+  const btn = (active: boolean, col = 'sky') => `px-3 py-1.5 rounded border text-xs font-medium transition-colors ${
+    active
+      ? col === 'teal'   ? 'border-teal-500 text-teal-300 bg-teal-900/30'
+      : col === 'orange' ? 'border-orange-500 text-orange-300 bg-orange-900/30'
+      : col === 'green'  ? 'border-emerald-600 text-emerald-300 bg-emerald-900/20'
+      :                    'border-sky-500 text-sky-300 bg-sky-900/30'
+      : 'border-gray-700 text-gray-400 hover:border-gray-400 hover:text-gray-200'
+  }`
+  const WIRE_PRESETS = ['#ffffff','#aaaaaa','#ffcc00','#00e5ff','#ff6644','#88ff44']
+
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-x-3 gap-y-1 px-4 py-2 border-b border-gray-800 shrink-0 flex-wrap bg-gray-950 text-xs">
 
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500 mr-1">Obj</span>
-          {(Object.keys(OBJ_LABELS) as ObjType[]).map(t => (
-            <button key={t} disabled={!!fileLabel} onClick={() => { setFileLabel(null); setObjType(t) }}
-              className={`px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${objType === t && !fileLabel ? 'border-orange-500 text-orange-300 bg-orange-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-              {OBJ_LABELS[t]}
-            </button>
-          ))}
-        </div>
+      {/* ── Row 1: Primary controls ─────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-gray-950 border-b border-gray-800 text-xs flex-wrap">
 
-        <div>
-          <input ref={fileInputRef} type="file" accept=".json,.glb,.gltf" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }} />
-          <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile}
-            className="px-2 py-0.5 rounded border border-gray-600 text-gray-300 hover:border-gray-300 transition-colors disabled:opacity-40">
-            📂 Open…
-          </button>
-        </div>
+        {/* Object selector */}
+        <select
+          value={fileLabel ? '__file__' : objType}
+          disabled={loadingFile}
+          onChange={e => { if (e.target.value !== '__file__') { setFileLabel(null); setObjType(e.target.value as ObjType) } }}
+          className="bg-gray-900 border border-gray-600 text-gray-200 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-gray-400 disabled:opacity-50"
+        >
+          {(Object.keys(OBJ_LABELS) as ObjType[]).map(t => <option key={t} value={t}>{OBJ_LABELS[t]}</option>)}
+          {fileLabel && <option value="__file__">📄 {fileLabel.replace(/^\d+_/, '').slice(0, 20)}</option>}
+        </select>
 
+        {/* File open */}
+        <input ref={fileInputRef} type="file" accept=".json,.glb,.gltf" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }} />
+        <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile} title="Open local file"
+          className="px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-400 transition-colors disabled:opacity-40 text-xs">
+          📂 Open
+        </button>
+
+        {/* Supabase picker */}
         <div className="relative">
           <button onClick={() => { setShowPicker(v => !v); if (!supaFiles.length && !loadingFiles) fetchFileList() }}
-            className={`px-2 py-0.5 rounded border transition-colors ${fileLabel ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-            {loadingFile ? '…' : fileLabel ? `↗ ${fileLabel.replace(/^\d+_/, '')}` : '↗ Supabase'}
+            className={`px-3 py-1.5 rounded border text-xs transition-colors ${fileLabel ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20' : 'border-gray-700 text-gray-400 hover:border-gray-400'}`}>
+            {loadingFile ? '…' : '☁ Cloud'}
           </button>
           {showPicker && (
             <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-700 rounded shadow-xl min-w-[220px] max-h-52 overflow-y-auto">
-              {loadingFiles && <div className="px-3 py-2 text-gray-400">Loading…</div>}
-              {!loadingFiles && supaFiles.length === 0 && <div className="px-3 py-2 text-gray-500">No files</div>}
+              {loadingFiles && <div className="px-3 py-2 text-xs text-gray-400">Loading…</div>}
+              {!loadingFiles && supaFiles.length === 0 && <div className="px-3 py-2 text-xs text-gray-500">No JSON / GLB files</div>}
               {supaFiles.map(f => (
                 <button key={f.url} onClick={() => loadSupaFile(f.url, f.name, f.fileType)}
-                  className="w-full text-left px-3 py-1.5 text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2">
+                  className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2">
                   <span className={`text-[10px] font-mono px-1 rounded ${f.fileType === 'json' ? 'bg-orange-900/40 text-orange-400' : 'bg-blue-900/40 text-blue-400'}`}>{f.fileType.toUpperCase()}</span>
                   {f.name.replace(/^\d+_/, '')}
                 </button>
@@ -833,83 +886,114 @@ export default function VisualHull() {
           )}
         </div>
 
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
+        <div className="w-px h-5 bg-gray-700 shrink-0" />
 
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">Dirs N</span>
-          <input type="range" min={3} max={120} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-20 accent-orange-500" />
-          <span className="font-mono text-orange-300 w-5 tabular-nums">{nDirs}</span>
-        </label>
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">Voxel</span>
-          <input type="range" min={12} max={128} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
-          <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? '⚠' : ''}</span>
-        </label>
-
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400">Stop</span>
-          <button onClick={() => setStopMode('delta')} className={btnToggle(stopMode === 'delta')}>Δ</button>
-          <button onClick={() => setStopMode('all')} className={btnToggle(stopMode === 'all')}>All N</button>
-        </div>
-
-        {stopMode === 'delta' && (
-          <label className="flex items-center gap-1.5">
-            <span className="text-gray-400 whitespace-nowrap">Δ &lt;</span>
-            <input type="range" min={0.01} max={5} step={0.01} value={deltaThreshold} onChange={e => setDeltaThreshold(+e.target.value)} className="w-20 accent-red-400" />
-            <span className="font-mono text-red-300 tabular-nums w-12">{deltaThreshold.toFixed(2)}%</span>
-          </label>
-        )}
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400">Speed</span>
-          <input type="range" min={50} max={2000} step={50} value={stepDelay} onChange={e => setStepDelay(+e.target.value)} className="w-16 accent-gray-400" />
-        </label>
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400">Silhouette</span>
-          <input type="range" min={0.05} max={0.8} step={0.05} value={projOpacity} onChange={e => setProjOpacity(+e.target.value)} className="w-14 accent-blue-400" />
-        </label>
-
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
-
+        {/* Presets */}
         <div className="flex items-center gap-1">
           {(Object.keys(PRESETS) as PresetKey[]).map(k => (
             <button key={k} onClick={() => setPreset(k)}
-              className={`px-2 py-0.5 rounded border transition-colors ${preset === k ? 'border-white/50 text-white bg-white/10' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300'}`}>
+              className={`px-2.5 py-1.5 rounded border text-xs transition-colors ${preset === k ? 'border-white/40 text-white bg-white/10' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300'}`}>
               {PRESET_LABELS[k]}
             </button>
           ))}
         </div>
 
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
+        <div className="w-px h-5 bg-gray-700 shrink-0" />
 
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500 mr-0.5">Show</span>
-          <button title="Body  [B]" onClick={() => setShowBody(v => !v)} className={btnToggle(showBody)}>Body</button>
-          <button title="Edges  [E]" onClick={() => setShowEdges(v => !v)} className={btnToggle(showEdges)}>Edges</button>
-          <button title="Wire tessellation  [W]" onClick={() => setShowWire(v => !v)} className={btnToggle(showWire)}>Wire</button>
-          <button title="Direction spheres  [D]" onClick={() => setShowDirSpheres(v => !v)} className={btnToggle(showDirSpheres)}>Dirs</button>
-          <button title="Projections  [P]" onClick={() => setShowProjections(v => !v)} className={btnToggle(showProjections)}>Proj</button>
-          <button title="Reference sphere  [S]" onClick={() => setShowRefSphere(v => !v)} className={btnToggle(showRefSphere)}>Sphere</button>
-        </div>
+        {/* Panel toggles */}
+        <button onClick={() => setShowParams(v => !v)} title="Algorithm parameters"
+          className={btn(showParams, 'sky')}>⚙ Params</button>
+        <button onClick={() => setShowViewOpts(v => !v)} title="View options"
+          className={btn(showViewOpts, 'sky')}>👁 View</button>
 
-        <div className="flex items-center gap-1 ml-auto">
-          <button title="Keyboard shortcuts  [?]" onClick={() => setShowShortcuts(v => !v)}
-            className="px-2 py-1 rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300 transition-colors text-sm">⌨</button>
-          <button title="Toggle stats panel  [I]" onClick={() => setShowSidebar(v => !v)}
-            className="px-2 py-1 rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300 transition-colors">▐</button>
-          <button title="Hull solid  [H]" onClick={() => setShowHull(v => !v)} disabled={!animDone}
-            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-600 text-gray-400 hover:border-teal-600'}`}>
+        {/* Right: actions */}
+        <div className="ml-auto flex items-center gap-1.5">
+          <button title="Keyboard shortcuts [?]" onClick={() => setShowShortcuts(v => !v)}
+            className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">⌨</button>
+          <button title="Toggle stats [I]" onClick={() => setShowSidebar(v => !v)}
+            className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">▐</button>
+          <button title="Hull solid [H]" onClick={() => setShowHull(v => !v)} disabled={!animDone}
+            className={`px-3 py-1.5 rounded border text-xs font-medium transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-700 text-gray-400 hover:border-teal-600'}`}>
             ◈ Hull
           </button>
-          <button title="Play / Pause  [Space]" onClick={() => { setStopped(false); setIsPlaying(v => !v) }} disabled={currentStep >= totalSteps && !stopped}
-            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-40 ${isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'}`}>
-            {isPlaying ? '⏸' : currentStep === 0 ? '▶ Play' : '▶'}
+          <button title="Play / Pause [Space]" onClick={() => { setStopped(false); setIsPlaying(v => !v) }} disabled={currentStep >= totalSteps && !stopped}
+            className={`px-3 py-1.5 rounded border text-xs font-medium transition-colors disabled:opacity-40 min-w-[72px] ${isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'}`}>
+            {isPlaying ? '⏸ Pause' : currentStep === 0 ? '▶ Play' : '▶ Resume'}
           </button>
-          <button title="Reset  [R]" onClick={handleReset} className="px-2.5 py-1 rounded border border-gray-600 text-gray-400 hover:border-gray-400 transition-colors">↺</button>
+          <button title="Reset [R]" onClick={handleReset}
+            className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-400 hover:border-gray-400 hover:text-gray-200 transition-colors text-base">↺</button>
         </div>
       </div>
+
+      {/* ── Row 2: Algorithm params (collapsible) ───────────────────────────── */}
+      {showParams && (
+        <div className="flex items-center gap-x-4 gap-y-1.5 px-3 py-2 bg-gray-950/80 border-b border-gray-800/60 text-xs flex-wrap">
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 whitespace-nowrap">Dirs</span>
+            <input type="range" min={3} max={120} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-24 accent-orange-500" />
+            <span className="font-mono text-orange-300 w-6 tabular-nums">{nDirs}</span>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 whitespace-nowrap">Voxel</span>
+            <input type="range" min={12} max={128} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
+            <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? ' ⚠' : ''}</span>
+          </label>
+          <div className="flex items-center gap-1">
+            <span className="text-gray-500">Stop</span>
+            <button onClick={() => setStopMode('delta')} className={btn(stopMode === 'delta')}>Δ</button>
+            <button onClick={() => setStopMode('all')} className={btn(stopMode === 'all')}>All N</button>
+          </div>
+          {stopMode === 'delta' && (
+            <label className="flex items-center gap-1.5">
+              <span className="text-gray-500 whitespace-nowrap">Δ &lt;</span>
+              <input type="range" min={0.01} max={5} step={0.01} value={deltaThreshold} onChange={e => setDeltaThreshold(+e.target.value)} className="w-20 accent-red-400" />
+              <span className="font-mono text-red-300 tabular-nums w-12">{deltaThreshold.toFixed(2)}%</span>
+            </label>
+          )}
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500">Speed</span>
+            <input type="range" min={50} max={2000} step={50} value={stepDelay} onChange={e => setStepDelay(+e.target.value)} className="w-20 accent-gray-500" />
+            <span className="font-mono text-gray-500 w-12 tabular-nums">{stepDelay}ms</span>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500">Silhouette</span>
+            <input type="range" min={0.05} max={0.8} step={0.05} value={projOpacity} onChange={e => setProjOpacity(+e.target.value)} className="w-16 accent-blue-400" />
+            <span className="font-mono text-blue-400 w-8 tabular-nums">{projOpacity.toFixed(2)}</span>
+          </label>
+        </div>
+      )}
+
+      {/* ── Row 3: View options (collapsible) ───────────────────────────────── */}
+      {showViewOpts && (
+        <div className="flex items-center gap-x-3 gap-y-1.5 px-3 py-2 bg-gray-950/80 border-b border-gray-800/60 text-xs flex-wrap">
+          <div className="flex items-center gap-1">
+            <span className="text-gray-500 mr-0.5">Show</span>
+            <button title="[B]" onClick={() => setShowBody(v => !v)} className={btn(showBody)}>Body</button>
+            <button title="[E]" onClick={() => setShowEdges(v => !v)} className={btn(showEdges)}>Edges</button>
+            <button title="[W]" onClick={() => setShowWire(v => !v)} className={btn(showWire)}>Wire</button>
+            <button title="[D]" onClick={() => setShowDirSpheres(v => !v)} className={btn(showDirSpheres)}>Dirs</button>
+            <button title="[P]" onClick={() => setShowProjections(v => !v)} className={btn(showProjections)}>Proj</button>
+            <button title="[S]" onClick={() => setShowRefSphere(v => !v)} className={btn(showRefSphere)}>Sphere</button>
+          </div>
+          <div className="w-px h-4 bg-gray-700 shrink-0" />
+          {/* Wireframe settings */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-500">Wire colour</span>
+            {WIRE_PRESETS.map(c => (
+              <button key={c} onClick={() => setWireColor(c)} title={c}
+                style={{ background: c }}
+                className={`w-5 h-5 rounded-full border-2 transition-colors ${wireColor === c ? 'border-white' : 'border-transparent hover:border-gray-400'}`} />
+            ))}
+            <input type="color" value={wireColor} onChange={e => setWireColor(e.target.value)}
+              className="w-6 h-6 rounded cursor-pointer border border-gray-600 bg-transparent p-0" title="Custom colour" />
+          </div>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500">Width</span>
+            <input type="range" min={0.3} max={4} step={0.1} value={wireWidth} onChange={e => setWireWidth(+e.target.value)} className="w-20 accent-gray-400" />
+            <span className="font-mono text-gray-400 w-10 tabular-nums">{wireWidth.toFixed(1)}px</span>
+          </label>
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
         <div ref={mountRef} className="flex-1 min-w-0 min-h-0" />
