@@ -5,6 +5,10 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { parseGeometry, type ThreeGeometryJson } from './ThreeJsonViewer'
+import { TeapotGeometry } from 'three/examples/jsm/geometries/TeapotGeometry.js'
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 
 // ── Fibonacci sphere ───────────────────────────────────────────────────────────
 
@@ -229,6 +233,37 @@ const PRESETS: Record<PresetKey, Preset> = {
 }
 const PRESET_LABELS: Record<PresetKey, string> = { dark: 'Dark', blueprint: 'Blueprint', light: 'Light', xray: 'X-Ray', black: 'Black' }
 
+// ── Wire helpers (LineMaterial for true pixel-width lines) ────────────────────
+
+function makeWireMesh(geo: THREE.BufferGeometry, color: string, width: number): LineSegments2 {
+  const wGeo = new THREE.WireframeGeometry(geo)
+  const lsGeo = new LineSegmentsGeometry()
+  lsGeo.setPositions(wGeo.attributes.position.array as Float32Array)
+  wGeo.dispose()
+  const mat = new LineMaterial({ color: new THREE.Color(color).getHex(), linewidth: width, transparent: true, opacity: 0.55 })
+  const ls = new LineSegments2(lsGeo, mat)
+  ls.name = 'obj-wire'
+  return ls
+}
+
+function makeWireFromTriPos(triPos: Float32Array, color: string, width: number): LineSegments2 {
+  const tmp = new THREE.BufferGeometry()
+  tmp.setAttribute('position', new THREE.Float32BufferAttribute(triPos, 3))
+  const ls = makeWireMesh(tmp, color, width)
+  tmp.dispose(); return ls
+}
+
+function buildStarShape(outerR: number, innerR: number, n: number): THREE.Shape {
+  const shape = new THREE.Shape()
+  for (let i = 0; i < n * 2; i++) {
+    const angle = (i / (n * 2)) * Math.PI * 2 - Math.PI / 2
+    const r = i % 2 === 0 ? outerR : innerR
+    const x = Math.cos(angle) * r, y = Math.sin(angle) * r
+    i === 0 ? shape.moveTo(x, y) : shape.lineTo(x, y)
+  }
+  shape.closePath(); return shape
+}
+
 // ── Scene helpers ─────────────────────────────────────────────────────────────
 
 function disposeObj(obj: THREE.Object3D) {
@@ -245,7 +280,11 @@ function clearGroup(g: THREE.Group) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type ObjType = 'torusknot' | 'box'
+type ObjType = 'torusknot' | 'box' | 'torus' | 'teapot' | 'star' | 'icosahedron' | 'cylinder' | 'cone' | 'duck'
+const OBJ_LABELS: Record<ObjType, string> = {
+  torusknot: 'Knot', box: 'Box', torus: 'Torus', teapot: 'Teapot',
+  star: 'Star', icosahedron: 'Ico', cylinder: 'Cylinder', cone: 'Cone', duck: '🦆 Duck',
+}
 interface FileItem { name: string; url: string; fileType: 'json' | 'gltf' }
 
 interface SceneRefs {
@@ -292,9 +331,17 @@ export default function SpaceCarving() {
   const [preset, setPreset]           = useState<PresetKey>('dark')
   const [showBody, setShowBody]       = useState(true)
   const [showEdges, setShowEdges]     = useState(false)
+  const [showWire, setShowWire]       = useState(false)
+  const [wireColor, setWireColor]     = useState('#aaaaaa')
+  const [wireWidth, setWireWidth]     = useState(0.8)
   const [showCams, setShowCams]       = useState(true)
   const [showPlanes, setShowPlanes]   = useState(true)
   const [showHull, setShowHull]       = useState(false)
+  const [showRefSphere, setShowRefSphere] = useState(true)
+  const [showSidebar, setShowSidebar]     = useState(true)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showParams, setShowParams]       = useState(true)
+  const [showViewOpts, setShowViewOpts]   = useState(false)
 
   const [supaFiles, setSupaFiles]     = useState<FileItem[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
@@ -339,7 +386,12 @@ export default function SpaceCarving() {
     const resize = () => { const w = mount.clientWidth, h = mount.clientHeight; if (!w || !h) return; camera.aspect = w/h; camera.updateProjectionMatrix(); renderer.setSize(w, h) }
     resize(); const ro = new ResizeObserver(resize); ro.observe(mount)
     let rafId = 0
-    const animate = () => { rafId = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera) }
+    const animate = () => {
+      rafId = requestAnimationFrame(animate); controls.update()
+      const w = mount.clientWidth || 1, h = mount.clientHeight || 1
+      objectGroup.traverse(c => { if (c.name === 'obj-wire' && (c as LineSegments2).isLineSegments2) (c as LineSegments2).material.resolution.set(w, h) })
+      renderer.render(scene, camera)
+    }
     animate()
 
     sceneRef.current = { renderer, scene, camera, controls, rafId, objectGroup, camerasGroup, planesGroup, hullGroup, refSphere, offScene, captureCam, renderTarget, posMaterial, offMesh: null }
@@ -364,8 +416,19 @@ export default function SpaceCarving() {
   // ── View toggles ───────────────────────────────────────────────────────────
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-mesh') c.visible = showBody }) }, [showBody])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-edges') c.visible = showEdges }) }, [showEdges])
+  useEffect(() => { const s = sceneRef.current; if (!s) return; s.objectGroup.traverse(c => { if (c.name === 'obj-wire') c.visible = showWire }) }, [showWire])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.camerasGroup.visible = showCams }, [showCams])
   useEffect(() => { const s = sceneRef.current; if (!s) return; s.planesGroup.visible = showPlanes }, [showPlanes])
+  useEffect(() => { const s = sceneRef.current; if (!s) return; s.refSphere.visible = showRefSphere }, [showRefSphere])
+  useEffect(() => {
+    const s = sceneRef.current; if (!s) return
+    s.objectGroup.traverse(c => {
+      if (c.name === 'obj-wire' && (c as LineSegments2).isLineSegments2) {
+        const mat = (c as LineSegments2).material as LineMaterial
+        mat.color.set(wireColor); mat.linewidth = wireWidth
+      }
+    })
+  }, [wireColor, wireWidth])
 
   // ── Hull mesh rebuild ──────────────────────────────────────────────────────
   const rebuildHull = useCallback((kCams: number) => {
@@ -398,21 +461,61 @@ export default function SpaceCarving() {
     mesh.visible = showBody
     const edges = Object.assign(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: p.edgeColor, transparent: true, opacity: 0.4 })), { name: 'obj-edges' })
     edges.visible = showEdges
-    s.objectGroup.add(mesh, edges)
+    const wire = makeWireMesh(geo, wireColor, wireWidth)
+    wire.visible = showWire
+    s.objectGroup.add(mesh, edges, wire)
     displayGeoRef.current = geo
     // Mirror to off-screen scene
-    clearGroup(s.offScene as unknown as THREE.Group)
+    s.offScene.clear()
     const offMesh = new THREE.Mesh(geo, s.posMaterial)
     s.offScene.add(offMesh)
     s.offMesh = offMesh
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, showBody, showEdges])
+  }, [preset, showBody, showEdges, showWire, wireColor, wireWidth])
 
   // ── Built-in object ────────────────────────────────────────────────────────
   const buildBuiltIn = useCallback((type: ObjType) => {
+    if (type === 'duck') {
+      const s = sceneRef.current; if (!s) return
+      setLoadingFile(true)
+      clearGroup(s.objectGroup); s.offScene.clear(); s.offMesh = null
+      new GLTFLoader().load('/Duck.glb', (gltf) => {
+        const sc2 = sceneRef.current; if (!sc2) { setLoadingFile(false); return }
+        const allVerts: number[] = [], allTri: number[] = []
+        gltf.scene.updateMatrixWorld(true)
+        gltf.scene.traverse(child => {
+          if (!(child as THREE.Mesh).isMesh) return
+          const mesh = child as THREE.Mesh
+          const posAttr = mesh.geometry.attributes.position; const index = mesh.geometry.index
+          for (let i = 0; i < posAttr.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld); allVerts.push(v.x, v.y, v.z) }
+          const cnt = index ? index.count : posAttr.count
+          for (let i = 0; i < cnt; i++) { const vi = index ? index.getX(i) : i; const v = new THREE.Vector3().fromBufferAttribute(posAttr, vi).applyMatrix4(mesh.matrixWorld); allTri.push(v.x, v.y, v.z) }
+        })
+        const norm = computeNorm(new Float32Array(allVerts))
+        const triPos = applyNorm(new Float32Array(allTri), norm)
+        // Off-screen: merged position-shader mesh
+        const offGeo = new THREE.BufferGeometry(); offGeo.setAttribute('position', new THREE.Float32BufferAttribute(triPos, 3))
+        sc2.offScene.clear(); const offM = new THREE.Mesh(offGeo, sc2.posMaterial); sc2.offScene.add(offM); sc2.offMesh = offM
+        // Display
+        clearGroup(sc2.objectGroup)
+        const p = PRESETS[preset]
+        gltf.scene.scale.setScalar(norm.sc); gltf.scene.position.set(-norm.cx*norm.sc, -norm.cy*norm.sc, -norm.cz*norm.sc)
+        gltf.scene.traverse(child => { if ((child as THREE.Mesh).isMesh) { const m = child as THREE.Mesh; m.name = 'obj-mesh'; m.visible = showBody; m.material = new THREE.MeshPhongMaterial({ color: 0xf5c518, emissive: 0x221100, shininess: 90, transparent: true, opacity: 0.92 }) } })
+        const duckWire = makeWireFromTriPos(triPos, wireColor, wireWidth); duckWire.visible = showWire
+        sc2.objectGroup.add(gltf.scene, duckWire)
+        setLoadingFile(false)
+      }, undefined, (err) => { console.error('Duck load error', err); setLoadingFile(false) })
+      return
+    }
     let geo: THREE.BufferGeometry
-    if (type === 'torusknot') geo = new THREE.TorusKnotGeometry(0.7, 0.18, 120, 16)
-    else geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
+    if (type === 'torusknot')     geo = new THREE.TorusKnotGeometry(0.7, 0.18, 120, 16)
+    else if (type === 'torus')    geo = new THREE.TorusGeometry(0.65, 0.28, 48, 96)
+    else if (type === 'teapot')   geo = new TeapotGeometry(0.8, 12)
+    else if (type === 'star')     geo = new THREE.ExtrudeGeometry(buildStarShape(0.85, 0.38, 5), { depth: 0.55, bevelEnabled: true, bevelSize: 0.05, bevelThickness: 0.05, bevelSegments: 3 })
+    else if (type === 'icosahedron') geo = new THREE.IcosahedronGeometry(0.9, 2)
+    else if (type === 'cylinder') geo = new THREE.CylinderGeometry(0.45, 0.7, 1.4, 6, 1)
+    else if (type === 'cone')     geo = new THREE.ConeGeometry(0.75, 1.5, 5, 1)
+    else                          geo = new THREE.BoxGeometry(1.2, 1.2, 1.2)
     geo.computeBoundingSphere()
     const bs = geo.boundingSphere!
     const sc = 1.35 / bs.radius
@@ -420,7 +523,7 @@ export default function SpaceCarving() {
     const off = bs.center.clone().multiplyScalar(-sc)
     geo.translate(off.x, off.y, off.z)
     addDisplayMesh(geo)
-  }, [addDisplayMesh])
+  }, [addDisplayMesh, preset, showBody, showWire, wireColor, wireWidth])
 
   useEffect(() => {
     if (fileLabel) return
@@ -443,6 +546,35 @@ export default function SpaceCarving() {
     setCaptured(false); setStep(0); setVolumes([]); setIsPlaying(false); setShowHull(false)
   }
 
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const OBJS: ObjType[] = ['torusknot','box','torus','teapot','star','icosahedron','cylinder','cone','duck']
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      switch (e.key) {
+        case ' ':    e.preventDefault(); setIsPlaying(v => !v); break
+        case 'r': case 'R': resetState(); break
+        case 'h': case 'H': setShowHull(v => !v); break
+        case 'b': case 'B': setShowBody(v => !v); break
+        case 'e': case 'E': setShowEdges(v => !v); break
+        case 'w': case 'W': setShowWire(v => !v); break
+        case 'd': case 'D': setShowCams(v => !v); break
+        case 'p': case 'P': setShowPlanes(v => !v); break
+        case 's': case 'S': setShowRefSphere(v => !v); break
+        case 'i': case 'I': setShowSidebar(v => !v); break
+        case '?':           setShowShortcuts(v => !v); break
+        default:
+          if (e.key >= '1' && e.key <= '9') {
+            const t = OBJS[+e.key - 1]
+            if (t) { setFileLabel(null); setObjType(t) }
+          }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // ── Camera markers ────────────────────────────────────────────────────────
   const buildCameraMarkers = useCallback((dirs: THREE.Vector3[]) => {
     const s = sceneRef.current; if (!s) return
@@ -460,7 +592,7 @@ export default function SpaceCarving() {
 
   // ── Capture all cameras (off-screen render + readback) ────────────────────
   const handleCapture = useCallback(async () => {
-    const s = sceneRef.current; if (!s || !s.offMesh) return
+    const s = sceneRef.current; if (!s || s.offScene.children.length === 0) return
     setCapturing(true)
     resetState()
 
@@ -651,42 +783,46 @@ export default function SpaceCarving() {
   const voxelSize  = ((2 * GRID_R) / gridSize).toFixed(3)
   const btnT = (active: boolean) => `px-2 py-0.5 rounded border text-xs transition-colors ${active ? 'border-sky-500 text-sky-300 bg-sky-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`
 
+  const btn = (active: boolean, col = 'sky') => `px-3 py-1.5 rounded border text-xs font-medium transition-colors ${
+    active
+      ? col === 'teal'  ? 'border-teal-500 text-teal-300 bg-teal-900/30'
+      : col === 'green' ? 'border-emerald-600 text-emerald-300 bg-emerald-900/20'
+      :                   'border-sky-500 text-sky-300 bg-sky-900/30'
+      : 'border-gray-700 text-gray-400 hover:border-gray-400 hover:text-gray-200'
+  }`
+  const WIRE_PRESETS = ['#ffffff','#aaaaaa','#ffcc00','#00e5ff','#ff6644','#88ff44']
+
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-x-3 gap-y-1 px-4 py-2 border-b border-gray-800 shrink-0 flex-wrap bg-gray-950 text-xs">
 
-        {/* Object */}
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500 mr-1">Obj</span>
-          {(['torusknot', 'box'] as ObjType[]).map(t => (
-            <button key={t} disabled={!!fileLabel} onClick={() => { setFileLabel(null); setObjType(t) }}
-              className={`px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${objType === t && !fileLabel ? 'border-orange-500 text-orange-300 bg-orange-900/30' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-              {t === 'torusknot' ? 'Torus' : 'Box'}
-            </button>
-          ))}
-        </div>
+      {/* ── Row 1: Primary ──────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-gray-950 border-b border-gray-800 text-xs flex-wrap">
+        <select value={fileLabel ? '__file__' : objType} disabled={loadingFile}
+          onChange={e => { if (e.target.value !== '__file__') { setFileLabel(null); setObjType(e.target.value as ObjType) } }}
+          className="bg-gray-900 border border-gray-600 text-gray-200 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-gray-400 disabled:opacity-50">
+          {(Object.keys(OBJ_LABELS) as ObjType[]).map(t => <option key={t} value={t}>{OBJ_LABELS[t]}</option>)}
+          {fileLabel && <option value="__file__">📄 {fileLabel.replace(/^\d+_/, '').slice(0, 20)}</option>}
+        </select>
 
-        <div>
-          <input ref={fileInputRef} type="file" accept=".json,.glb,.gltf" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }} />
-          <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile}
-            className="px-2 py-0.5 rounded border border-gray-600 text-gray-300 hover:border-gray-300 transition-colors disabled:opacity-40">
-            📂 Open…
-          </button>
-        </div>
+        <input ref={fileInputRef} type="file" accept=".json,.glb,.gltf" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) loadLocalFile(f); e.target.value = '' }} />
+        <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile}
+          className="px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-400 transition-colors disabled:opacity-40 text-xs">
+          📂 Open
+        </button>
 
         <div className="relative">
           <button onClick={() => { setShowPicker(v => !v); if (!supaFiles.length && !loadingFiles) fetchFileList() }}
-            className={`px-2 py-0.5 rounded border transition-colors ${fileLabel ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20' : 'border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-            {loadingFile ? '…' : fileLabel ? `↗ ${fileLabel.replace(/^\d+_/, '')}` : '↗ Supabase'}
+            className={`px-3 py-1.5 rounded border text-xs transition-colors ${fileLabel ? 'border-cyan-600 text-cyan-300 bg-cyan-900/20' : 'border-gray-700 text-gray-400 hover:border-gray-400'}`}>
+            {loadingFile ? '…' : '☁ Cloud'}
           </button>
           {showPicker && (
             <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-700 rounded shadow-xl min-w-[220px] max-h-52 overflow-y-auto">
-              {loadingFiles && <div className="px-3 py-2 text-gray-400">Loading…</div>}
-              {!loadingFiles && supaFiles.length === 0 && <div className="px-3 py-2 text-gray-500">No files</div>}
+              {loadingFiles && <div className="px-3 py-2 text-xs text-gray-400">Loading…</div>}
+              {!loadingFiles && supaFiles.length === 0 && <div className="px-3 py-2 text-xs text-gray-500">No JSON / GLB files</div>}
               {supaFiles.map(f => (
                 <button key={f.url} onClick={() => loadSupaFile(f.url, f.name, f.fileType)}
-                  className="w-full text-left px-3 py-1.5 text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2">
+                  className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 truncate flex items-center gap-2">
                   <span className={`text-[10px] font-mono px-1 rounded ${f.fileType === 'json' ? 'bg-orange-900/40 text-orange-400' : 'bg-blue-900/40 text-blue-400'}`}>{f.fileType.toUpperCase()}</span>
                   {f.name.replace(/^\d+_/, '')}
                 </button>
@@ -695,147 +831,172 @@ export default function SpaceCarving() {
           )}
         </div>
 
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
+        <div className="w-px h-5 bg-gray-700 shrink-0" />
 
-        {/* Algorithm params */}
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">Cameras N</span>
-          <input type="range" min={4} max={48} value={nCams} onChange={e => setNCams(+e.target.value)} className="w-20 accent-orange-500" />
-          <span className="font-mono text-orange-300 w-5 tabular-nums">{nCams}</span>
-        </label>
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">Voxel</span>
-          <input type="range" min={12} max={96} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-20 accent-purple-400" />
-          <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? '⚠' : ''}</span>
-        </label>
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">Threshold</span>
-          <input type="range" min={0.005} max={0.1} step={0.005} value={threshold} onChange={e => setThreshold(+e.target.value)} className="w-20 accent-red-400" />
-          <span className="font-mono text-red-300 tabular-nums w-12">{threshold.toFixed(3)}</span>
-        </label>
-
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-400 whitespace-nowrap">RT res</span>
-          {([64, 128, 256] as const).map(r => (
-            <button key={r} onClick={() => setRtRes(r)} className={btnT(rtRes === r)}>{r}</button>
-          ))}
-        </label>
-
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
-
-        {/* Presets */}
         <div className="flex items-center gap-1">
           {(Object.keys(PRESETS) as PresetKey[]).map(k => (
             <button key={k} onClick={() => setPreset(k)}
-              className={`px-2 py-0.5 rounded border transition-colors ${preset === k ? 'border-white/50 text-white bg-white/10' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300'}`}>
+              className={`px-2.5 py-1.5 rounded border text-xs transition-colors ${preset === k ? 'border-white/40 text-white bg-white/10' : 'border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-300'}`}>
               {PRESET_LABELS[k]}
             </button>
           ))}
         </div>
 
-        <div className="w-px h-4 bg-gray-700 shrink-0" />
+        <div className="w-px h-5 bg-gray-700 shrink-0" />
 
-        {/* View toggles */}
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500 mr-0.5">Show</span>
-          <button onClick={() => setShowBody(v => !v)} className={btnT(showBody)}>Body</button>
-          <button onClick={() => setShowEdges(v => !v)} className={btnT(showEdges)}>Edges</button>
-          <button onClick={() => setShowCams(v => !v)} className={btnT(showCams)}>Cams</button>
-          <button onClick={() => setShowPlanes(v => !v)} className={btnT(showPlanes)}>Planes</button>
-        </div>
+        <button onClick={() => setShowParams(v => !v)} className={btn(showParams)}>⚙ Params</button>
+        <button onClick={() => setShowViewOpts(v => !v)} className={btn(showViewOpts)}>👁 View</button>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1 ml-auto">
-          <button onClick={() => setShowHull(v => !v)} disabled={!animDone}
-            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-600 text-gray-400 hover:border-teal-600'}`}>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button title="Shortcuts [?]" onClick={() => setShowShortcuts(v => !v)}
+            className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">⌨</button>
+          <button title="Stats [I]" onClick={() => setShowSidebar(v => !v)}
+            className="w-8 h-8 flex items-center justify-center rounded border border-gray-700 text-gray-500 hover:border-gray-400 hover:text-gray-200 transition-colors">▐</button>
+          <button title="Hull [H]" onClick={() => setShowHull(v => !v)} disabled={!animDone}
+            className={`px-3 py-1.5 rounded border text-xs font-medium transition-colors disabled:opacity-30 ${showHull ? 'border-teal-500 text-teal-300 bg-teal-900/30' : 'border-gray-700 text-gray-400 hover:border-teal-600'}`}>
             ◈ Hull
           </button>
           <button onClick={handleCapture} disabled={capturing || loadingFile}
-            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-40 ${captured ? 'border-cyan-600 text-cyan-400 bg-cyan-900/20' : 'border-blue-600 text-blue-400 bg-blue-900/20'}`}>
-            {capturing ? '⟳ Capturing…' : captured ? '↺ Re-capture' : '📷 Capture'}
+            className={`px-3 py-1.5 rounded border text-xs font-medium transition-colors disabled:opacity-40 ${captured ? 'border-cyan-600 text-cyan-400 bg-cyan-900/20' : 'border-blue-600 text-blue-400 bg-blue-900/20'}`}>
+            {capturing ? '⟳…' : captured ? '↺ Re-capture' : '📷 Capture'}
           </button>
-          <button onClick={() => setIsPlaying(v => !v)} disabled={!captured || step >= totalCams}
-            className={`px-2.5 py-1 rounded border transition-colors disabled:opacity-40 ${isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'}`}>
+          <button title="[Space]" onClick={() => setIsPlaying(v => !v)} disabled={!captured || step >= totalCams}
+            className={`px-3 py-1.5 rounded border text-xs font-medium min-w-[80px] transition-colors disabled:opacity-40 ${isPlaying ? 'border-yellow-600 text-yellow-400 bg-yellow-900/20' : 'border-emerald-600 text-emerald-400 bg-emerald-900/20'}`}>
             {isPlaying ? '⏸ Pause' : step === 0 ? '▶ Carve' : '▶ Resume'}
           </button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        <div ref={mountRef} className="flex-1 min-w-0 min-h-0" />
-
-        {/* Stats */}
-        <div className="w-48 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col gap-3 p-3 text-xs overflow-y-auto">
-          <div>
-            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Cameras</div>
-            <div className="font-mono text-gray-300 text-lg tabular-nums">{step} <span className="text-gray-600 text-xs">/ {totalCams}</span></div>
-            <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-              <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${(step / Math.max(totalCams, 1)) * 100}%` }} />
-            </div>
-          </div>
-
-          <div>
-            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Surface discovered</div>
-            <div className="font-mono text-blue-300 text-lg tabular-nums">{latestVol.toFixed(1)}<span className="text-gray-600 text-xs">%</span></div>
-            <div className="text-gray-600 text-[10px]">of bounding sphere</div>
-            <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${Math.min(100, Math.max(0, latestVol))}%` }} />
-            </div>
-          </div>
-
-          {volumes.length > 1 && (
-            <div>
-              <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Δ per camera</div>
-              <div className={`font-mono text-lg tabular-nums ${delta < 0 ? 'text-emerald-400' : 'text-gray-500'}`}>{delta < 0 ? `+${(-delta).toFixed(3)}%` : '—'}</div>
-              {delta < 0 && <div className="text-gray-600 text-[10px]">surface growing</div>}
-            </div>
-          )}
-
-          <div>
-            <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Grid</div>
-            <div className="font-mono text-purple-300">{gridSize}³</div>
-            <div className="text-gray-600 text-[10px]">voxel {voxelSize} u · RT {rtRes}px</div>
-          </div>
-
-          {!captured && !capturing && (
-            <div className="rounded border border-blue-800 bg-blue-900/20 px-2 py-1.5 text-blue-400 text-[11px]">
-              Press 📷 Capture to render from all cameras
-            </div>
-          )}
-          {capturing && (
-            <div className="rounded border border-cyan-700 bg-cyan-900/20 px-2 py-1.5 text-cyan-400 text-[11px]">
-              Rendering {nCams} views…
-            </div>
-          )}
-          {captured && step === 0 && (
-            <div className="rounded border border-emerald-800 bg-emerald-900/20 px-2 py-1.5 text-emerald-400 text-[11px]">
-              {nCams} views captured — press ▶ Carve
-            </div>
-          )}
-          {animDone && (
-            <div className={`rounded border px-2 py-1.5 text-[11px] cursor-pointer transition-colors ${showHull ? 'border-teal-700 bg-teal-900/20 text-teal-400' : 'border-gray-700 text-gray-500 hover:border-teal-700'}`}
-              onClick={() => setShowHull(v => !v)}>
-              {showHull ? '◈ Hull visible' : '◈ Show carved solid'}
-            </div>
-          )}
-
-          {volumes.length > 1 && (
-            <div>
-              <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Convergence</div>
-              <svg viewBox={`0 0 ${volumes.length} 40`} className="w-full h-10" preserveAspectRatio="none">
-                <polyline points={volumes.map((v, i) => `${i},${40 - (v/100)*36}`).join(' ')} fill="none" stroke="#3366cc" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-              </svg>
-            </div>
-          )}
-
-          <div className="text-gray-600 text-[10px] leading-relaxed border-t border-gray-800 pt-2">
-            colour = (pos+1.5)/3.0<br />
-            keep if min_dist ≤ {threshold.toFixed(3)}<br />
-            <span className="text-gray-700">across all {step} cameras</span>
+      {/* ── Row 2: Params (collapsible) ─────────────────────────────────────── */}
+      {showParams && (
+        <div className="flex items-center gap-x-4 gap-y-1.5 px-3 py-2 bg-gray-950/80 border-b border-gray-800/60 text-xs flex-wrap">
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 whitespace-nowrap">Cameras N</span>
+            <input type="range" min={4} max={48} value={nCams} onChange={e => setNCams(+e.target.value)} className="w-24 accent-orange-500" />
+            <span className="font-mono text-orange-300 w-5 tabular-nums">{nCams}</span>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 whitespace-nowrap">Voxel</span>
+            <input type="range" min={12} max={96} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
+            <span className={`font-mono tabular-nums w-12 ${gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 64 ? ' ⚠' : ''}</span>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 whitespace-nowrap">Threshold</span>
+            <input type="range" min={0.005} max={0.1} step={0.005} value={threshold} onChange={e => setThreshold(+e.target.value)} className="w-20 accent-red-400" />
+            <span className="font-mono text-red-300 tabular-nums w-12">{threshold.toFixed(3)}</span>
+          </label>
+          <div className="flex items-center gap-1">
+            <span className="text-gray-500 whitespace-nowrap">RT res</span>
+            {([64, 128, 256] as const).map(r => (
+              <button key={r} onClick={() => setRtRes(r)} className={btn(rtRes === r)}>{r}px</button>
+            ))}
           </div>
         </div>
+      )}
+
+      {/* ── Row 3: View options (collapsible) ───────────────────────────────── */}
+      {showViewOpts && (
+        <div className="flex items-center gap-x-3 gap-y-1.5 px-3 py-2 bg-gray-950/80 border-b border-gray-800/60 text-xs flex-wrap">
+          <div className="flex items-center gap-1">
+            <span className="text-gray-500 mr-0.5">Show</span>
+            <button title="[B]" onClick={() => setShowBody(v => !v)} className={btn(showBody)}>Body</button>
+            <button title="[E]" onClick={() => setShowEdges(v => !v)} className={btn(showEdges)}>Edges</button>
+            <button title="[W]" onClick={() => setShowWire(v => !v)} className={btn(showWire)}>Wire</button>
+            <button title="[D]" onClick={() => setShowCams(v => !v)} className={btn(showCams)}>Cams</button>
+            <button title="[P]" onClick={() => setShowPlanes(v => !v)} className={btn(showPlanes)}>Planes</button>
+            <button title="[S]" onClick={() => setShowRefSphere(v => !v)} className={btn(showRefSphere)}>Sphere</button>
+          </div>
+          <div className="w-px h-4 bg-gray-700 shrink-0" />
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-500">Wire colour</span>
+            {WIRE_PRESETS.map(c => (
+              <button key={c} onClick={() => setWireColor(c)} style={{ background: c }}
+                className={`w-5 h-5 rounded-full border-2 transition-colors ${wireColor === c ? 'border-white' : 'border-transparent hover:border-gray-400'}`} />
+            ))}
+            <input type="color" value={wireColor} onChange={e => setWireColor(e.target.value)}
+              className="w-6 h-6 rounded cursor-pointer border border-gray-600 bg-transparent p-0" />
+          </div>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500">Width</span>
+            <input type="range" min={0.3} max={4} step={0.1} value={wireWidth} onChange={e => setWireWidth(+e.target.value)} className="w-20 accent-gray-400" />
+            <span className="font-mono text-gray-400 w-10 tabular-nums">{wireWidth.toFixed(1)}px</span>
+          </label>
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0 flex overflow-hidden relative">
+        <div ref={mountRef} className="flex-1 min-w-0 min-h-0" />
+
+        {/* Keyboard shortcuts overlay */}
+        {showShortcuts && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-gray-900/95 border border-gray-700 rounded-lg shadow-2xl p-4 text-xs text-gray-300 min-w-[260px]">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-gray-400 font-medium uppercase tracking-wider text-[10px]">Keyboard Shortcuts</span>
+              <button onClick={() => setShowShortcuts(false)} className="text-gray-600 hover:text-gray-300">✕</button>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+              {[['Space','Play / Pause'],['H','Hull'],['B','Body'],['E','Edges'],['W','Wireframe'],['D','Cameras'],['P','Planes'],['S','Ref sphere'],['I','Stats panel'],['1–9','Select object']].map(([k, v]) => (
+                <div key={k} className="flex items-center gap-2">
+                  <kbd className="px-1.5 py-0.5 bg-gray-800 border border-gray-600 rounded text-[10px] font-mono text-gray-300 shrink-0">{k}</kbd>
+                  <span className="text-gray-500">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Stats sidebar */}
+        {showSidebar && (
+          <div className="w-44 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col gap-3 p-3 text-xs overflow-y-auto">
+            <div>
+              <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Cameras</div>
+              <div className="font-mono text-gray-300 text-lg tabular-nums">{step} <span className="text-gray-600 text-xs">/ {totalCams}</span></div>
+              <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${(step / Math.max(totalCams, 1)) * 100}%` }} />
+              </div>
+            </div>
+            <div>
+              <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Surface discovered</div>
+              <div className="font-mono text-blue-300 text-lg tabular-nums">{latestVol.toFixed(1)}<span className="text-gray-600 text-xs">%</span></div>
+              <div className="text-gray-600 text-[10px]">of bounding sphere</div>
+              <div className="mt-1.5 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${Math.min(100, Math.max(0, latestVol))}%` }} />
+              </div>
+            </div>
+            {volumes.length > 1 && (
+              <div>
+                <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Δ per camera</div>
+                <div className={`font-mono text-lg tabular-nums ${delta < 0 ? 'text-emerald-400' : 'text-gray-500'}`}>{delta < 0 ? `+${(-delta).toFixed(3)}%` : '—'}</div>
+                {delta < 0 && <div className="text-gray-600 text-[10px]">surface growing</div>}
+              </div>
+            )}
+            <div>
+              <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Grid</div>
+              <div className="font-mono text-purple-300">{gridSize}³</div>
+              <div className="text-gray-600 text-[10px]">voxel {voxelSize} · RT {rtRes}px</div>
+            </div>
+            {!captured && !capturing && <div className="rounded border border-blue-800 bg-blue-900/20 px-2 py-1.5 text-blue-400 text-[11px]">Press 📷 Capture first</div>}
+            {capturing && <div className="rounded border border-cyan-700 bg-cyan-900/20 px-2 py-1.5 text-cyan-400 text-[11px]">Rendering {nCams} views…</div>}
+            {captured && step === 0 && <div className="rounded border border-emerald-800 bg-emerald-900/20 px-2 py-1.5 text-emerald-400 text-[11px]">{nCams} views ready — ▶ Carve</div>}
+            {animDone && (
+              <div className={`rounded border px-2 py-1.5 text-[11px] cursor-pointer transition-colors ${showHull ? 'border-teal-700 bg-teal-900/20 text-teal-400' : 'border-gray-700 text-gray-500 hover:border-teal-700'}`}
+                onClick={() => setShowHull(v => !v)}>
+                {showHull ? '◈ Hull visible' : '◈ Show carved solid'}
+              </div>
+            )}
+            {volumes.length > 1 && (
+              <div>
+                <div className="text-gray-500 mb-1 uppercase tracking-wider text-[10px]">Convergence</div>
+                <svg viewBox={`0 0 ${volumes.length} 40`} className="w-full h-10" preserveAspectRatio="none">
+                  <polyline points={volumes.map((v, i) => `${i},${40 - (v/100)*36}`).join(' ')} fill="none" stroke="#3366cc" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                </svg>
+              </div>
+            )}
+            <div className="text-gray-600 text-[10px] leading-relaxed border-t border-gray-800 pt-2">
+              colour = (pos+1.5)/3.0<br />keep if min_dist ≤ {threshold.toFixed(3)}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
