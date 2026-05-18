@@ -459,6 +459,32 @@ function buildProjectionMesh(
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+// ── Keyboard-editable number input synced with a range slider ─────────────────
+// Defined at module level so it can be used inside VisualHull without hooks penalty.
+// Uses React hooks from the file-level import.
+
+function NumInput({ value, onChange, min, max, step = 1, decimals = 0, color = 'text-gray-300', w = 'w-12' }: {
+  value: number; onChange: (v: number) => void
+  min: number; max: number; step?: number; decimals?: number; color?: string; w?: string
+}) {
+  const fmt = (v: number) => decimals > 0 ? v.toFixed(decimals) : String(Math.round(v))
+  const [text, setText] = useState(fmt(value))
+  useEffect(() => { setText(fmt(value)) }, [value])  // eslint-disable-line react-hooks/exhaustive-deps
+  const commit = (raw: string) => {
+    const n = parseFloat(raw)
+    const clamped = isNaN(n) ? value : Math.min(max, Math.max(min, Math.round(n / step) * step))
+    onChange(+clamped.toFixed(10)); setText(fmt(clamped))
+  }
+  return (
+    <input type="number" min={min} max={max} step={step} value={text}
+      onChange={e => { setText(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n) && n >= min && n <= max) onChange(n) }}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+      className={`${w} bg-transparent border border-gray-700 rounded font-mono text-xs text-right px-1 py-0 focus:outline-none focus:border-sky-400 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:opacity-100 ${color}`}
+    />
+  )
+}
+
 type ObjType = 'torusknot' | 'box' | 'torus' | 'teapot' | 'star' | 'icosahedron' | 'cylinder' | 'cone' | 'duck'
 
 const OBJ_LABELS: Record<ObjType, string> = {
@@ -1223,7 +1249,7 @@ export default function VisualHull() {
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500 whitespace-nowrap">Dirs</span>
             <input type="range" min={3} max={120} value={nDirs} onChange={e => setNDirs(+e.target.value)} className="w-24 accent-orange-500" />
-            <span className="font-mono text-orange-300 w-6 tabular-nums">{nDirs}</span>
+            <NumInput value={nDirs} onChange={setNDirs} min={3} max={120} w="w-10" color="text-orange-300" />
           </label>
           <div className="flex items-center gap-1 flex-wrap">
             <span className="text-gray-500 whitespace-nowrap">Strategia</span>
@@ -1237,7 +1263,9 @@ export default function VisualHull() {
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500 whitespace-nowrap">Voxel</span>
             <input type="range" min={12} max={192} step={4} value={gridSize} onChange={e => setGridSize(+e.target.value)} className="w-24 accent-purple-400" />
-            <span className={`font-mono tabular-nums w-12 ${gridSize > 128 ? 'text-red-400' : gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'}`}>{voxelSize}{gridSize > 128 ? ' ⚠⚠' : gridSize > 64 ? ' ⚠' : ''}</span>
+            <NumInput value={gridSize} onChange={v => setGridSize(Math.round(v/4)*4)} min={12} max={192} step={4} w="w-12"
+              color={gridSize > 128 ? 'text-red-400' : gridSize > 64 ? 'text-yellow-400' : 'text-purple-300'} />
+            <span className="text-gray-600 text-[10px]">{voxelSize}{gridSize > 128 ? '⚠⚠' : gridSize > 64 ? '⚠' : ''}</span>
           </label>
           <div className="flex items-center gap-1">
             <span className="text-gray-500">Stop</span>
@@ -1248,18 +1276,20 @@ export default function VisualHull() {
             <label className="flex items-center gap-1.5">
               <span className="text-gray-500 whitespace-nowrap">Δ &lt;</span>
               <input type="range" min={0.01} max={5} step={0.01} value={deltaThreshold} onChange={e => setDeltaThreshold(+e.target.value)} className="w-20 accent-red-400" />
-              <span className="font-mono text-red-300 tabular-nums w-12">{deltaThreshold.toFixed(2)}%</span>
+              <NumInput value={deltaThreshold} onChange={setDeltaThreshold} min={0.01} max={5} step={0.01} decimals={2} w="w-14" color="text-red-300" />
+              <span className="text-gray-500">%</span>
             </label>
           )}
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500">Speed</span>
             <input type="range" min={50} max={2000} step={50} value={stepDelay} onChange={e => setStepDelay(+e.target.value)} className="w-20 accent-gray-500" />
-            <span className="font-mono text-gray-500 w-12 tabular-nums">{stepDelay}ms</span>
+            <NumInput value={stepDelay} onChange={v => setStepDelay(Math.round(v/50)*50)} min={50} max={2000} step={50} w="w-14" color="text-gray-400" />
+            <span className="text-gray-600">ms</span>
           </label>
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500">Silhouette</span>
             <input type="range" min={0.05} max={0.8} step={0.05} value={projOpacity} onChange={e => setProjOpacity(+e.target.value)} className="w-16 accent-blue-400" />
-            <span className="font-mono text-blue-400 w-8 tabular-nums">{projOpacity.toFixed(2)}</span>
+            <NumInput value={projOpacity} onChange={setProjOpacity} min={0.05} max={0.8} step={0.05} decimals={2} w="w-12" color="text-blue-400" />
           </label>
         </div>
       )}
@@ -1291,7 +1321,8 @@ export default function VisualHull() {
           <label className="flex items-center gap-1.5">
             <span className="text-gray-500">Width</span>
             <input type="range" min={0.3} max={4} step={0.1} value={wireWidth} onChange={e => setWireWidth(+e.target.value)} className="w-20 accent-gray-400" />
-            <span className="font-mono text-gray-400 w-10 tabular-nums">{wireWidth.toFixed(1)}px</span>
+            <NumInput value={wireWidth} onChange={setWireWidth} min={0.3} max={4} step={0.1} decimals={1} w="w-12" color="text-gray-400" />
+            <span className="text-gray-600">px</span>
           </label>
         </div>
       )}
