@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import LogViewer from './LogViewer'
 
 type Status = 'new' | 'in_progress' | 'done' | 'wontfix'
 
@@ -121,6 +122,7 @@ function Expanded({
   const [notes, setNotes] = useState('')
   const [saved, setSaved] = useState(false)
   const [logError, setLogError] = useState('')
+  const [showLog, setShowLog] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -204,16 +206,30 @@ function Expanded({
         ))}
 
         {detail.log_path && (
-          <button
-            onClick={openLog}
-            className="px-2 py-1 text-[11px] rounded border border-gray-700 text-gray-300
-                       hover:border-gray-500 hover:text-gray-100 transition-colors"
-          >
-            Pobierz log
-          </button>
+          <>
+            <button
+              onClick={() => setShowLog((v) => !v)}
+              className={`px-2 py-1 text-[11px] rounded border transition-colors ${
+                showLog
+                  ? 'border-gray-500 text-gray-100 bg-gray-800'
+                  : 'border-gray-700 text-gray-300 hover:border-gray-500 hover:text-gray-100'
+              }`}
+            >
+              {showLog ? 'Ukryj log' : 'Podejrzyj log'}
+            </button>
+            <button
+              onClick={openLog}
+              className="px-2 py-1 text-[11px] rounded border border-gray-700 text-gray-300
+                         hover:border-gray-500 hover:text-gray-100 transition-colors"
+            >
+              Pobierz ZIP
+            </button>
+          </>
         )}
         {logError && <span className="text-[11px] text-red-400">{logError}</span>}
       </div>
+
+      {showLog && detail.log_path && <LogViewer id={id} />}
 
       <div>
         <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Notatki</div>
