@@ -1,1 +1,10 @@
 node_modules/
+
+# pliki srodowiskowe — zawieraja service role key i tokeny
+.env
+.env.*
+!.env.example
+
+# Supabase CLI
+supabase/.temp/
+supabase/.branches/
