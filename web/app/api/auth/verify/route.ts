@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { hasScope } from '@/lib/auth'
 
+// Add-in wola to, zeby sprawdzic swoj token zapisu przed wyslaniem zgloszenia.
+// Odpowiada tylko true/false — nie zdradza, na jakim poziomie token dziala.
 export async function POST(req: NextRequest) {
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-  const valid = !!token && token === process.env.UPLOAD_BEARER_TOKEN
-  return NextResponse.json({ valid })
+  return NextResponse.json({ valid: hasScope(req, 'write') })
 }

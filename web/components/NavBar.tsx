@@ -3,18 +3,18 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
 const TABS = [
-  { label: 'File Manager', href: '/' },
-  { label: 'Tools', href: '/tools/fibonacci-sphere' },
+  { label: 'File Manager', href: '/', match: (p: string) => p === '/' },
+  { label: 'Tools', href: '/tools/fibonacci-sphere', match: (p: string) => p.startsWith('/tools') },
+  { label: 'Zgłoszenia', href: '/feedback', match: (p: string) => p.startsWith('/feedback') },
 ]
 
 export default function NavBar() {
   const path = usePathname()
-  const isTools = path.startsWith('/tools')
 
   return (
     <nav className="flex items-center gap-1">
-      {TABS.map((tab, i) => {
-        const active = i === 0 ? !isTools : isTools
+      {TABS.map((tab) => {
+        const active = tab.match(path)
         return (
           <Link
             key={tab.href}

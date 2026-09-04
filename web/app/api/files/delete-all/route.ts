@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin, BUCKET } from '@/lib/supabase'
+import { requireScope } from '@/lib/auth'
 
 export async function DELETE(req: NextRequest) {
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-  if (!token || token !== process.env.DELETE_BEARER_TOKEN) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = requireScope(req, 'admin')
+  if (denied) return denied
 
   const { data, error: listError } = await supabaseAdmin.storage.from(BUCKET).list('', { limit: 1000 })
   if (listError) {
