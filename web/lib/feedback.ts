@@ -22,6 +22,9 @@ export const RATE_LIMIT_PER_HOUR = 10
 
 export const MAX_DESCRIPTION_CHARS = 20_000
 
+/** Ile znakow opisu pokazuje lista, zeby nie ciagnac calych zgloszen. */
+export const LIST_SNIPPET_CHARS = 200
+
 export interface FeedbackPayload {
   kind: FeedbackKind
   description: string

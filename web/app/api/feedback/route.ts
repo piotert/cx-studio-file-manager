@@ -3,7 +3,10 @@ import { supabaseAdmin } from '@/lib/supabase'
 import { clientIp, requireScope } from '@/lib/auth'
 import {
   FEEDBACK_BUCKET,
+  FEEDBACK_KINDS,
+  FEEDBACK_STATUSES,
   INLINE_LOG_LIMIT_BYTES,
+  LIST_SNIPPET_CHARS,
   MAX_LOG_BYTES,
   RATE_LIMIT_PER_HOUR,
   logStoragePath,
@@ -151,4 +154,77 @@ export async function POST(req: NextRequest) {
     },
     { status: 201 }
   )
+}
+
+/**
+ * Lista zgloszen dla wlasciciela. Token admina — token zapisu tu nie wejdzie.
+ *
+ * Zwraca metadane i poczatek opisu; pelna tresc i logi sa pod /api/feedback/{id}.
+ * Filtry: status, kind, user, from, to. Stronicowanie: limit + offset.
+ */
+export async function GET(req: NextRequest) {
+  const denied = requireScope(req, 'admin')
+  if (denied) return denied
+
+  const params = req.nextUrl.searchParams
+
+  const limit = Math.min(Math.max(Number(params.get('limit')) || 50, 1), 200)
+  const offset = Math.max(Number(params.get('offset')) || 0, 0)
+
+  let query = supabaseAdmin
+    .from('feedback')
+    .select(
+      'id, created_at, client_created_at, kind, description, user_name, addin_version, context, log_path, log_uploaded, status, notes',
+      { count: 'exact' }
+    )
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1)
+
+  const status = params.get('status')
+  if (status && status !== 'all') {
+    if (!FEEDBACK_STATUSES.includes(status as (typeof FEEDBACK_STATUSES)[number])) {
+      return NextResponse.json({ error: 'Unknown status' }, { status: 400 })
+    }
+    query = query.eq('status', status)
+  }
+
+  const kind = params.get('kind')
+  if (kind && kind !== 'all') {
+    if (!FEEDBACK_KINDS.includes(kind as (typeof FEEDBACK_KINDS)[number])) {
+      return NextResponse.json({ error: 'Unknown kind' }, { status: 400 })
+    }
+    query = query.eq('kind', kind)
+  }
+
+  const user = params.get('user')
+  if (user) query = query.ilike('user_name', `%${user}%`)
+
+  const from = params.get('from')
+  if (from) query = query.gte('created_at', from)
+
+  const to = params.get('to')
+  if (to) query = query.lte('created_at', to)
+
+  const { data, error, count } = await query
+  if (error) {
+    console.error('[feedback] list failed', error)
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 })
+  }
+
+  type Row = {
+    description: string
+    [key: string]: unknown
+  }
+
+  const items = (data ?? []).map((row) => {
+    const { description, ...rest } = row as Row
+    return {
+      ...rest,
+      // Sama zajawka — pelny opis wisi pod /api/feedback/{id}.
+      snippet: description.slice(0, LIST_SNIPPET_CHARS),
+      truncated: description.length > LIST_SNIPPET_CHARS,
+    }
+  })
+
+  return NextResponse.json({ items, total: count ?? 0, limit, offset })
 }
