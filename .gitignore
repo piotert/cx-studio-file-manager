@@ -8,3 +8,5 @@ node_modules/
 # Supabase CLI
 supabase/.temp/
 supabase/.branches/
+.vercel
+.env*.local
