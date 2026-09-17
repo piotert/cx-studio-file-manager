@@ -1,8 +1,8 @@
-# publish-release.ps1
+﻿# publish-release.ps1
 # Publikuje paczke add-inu na serwerze CX (max RELEASES_KEEP wersji, domyslnie najnowsza + 3 wstecz).
 #
 # Uzycie:
-#   $env:CX_ADMIN_TOKEN = "<FEEDBACK_ADMIN_TOKEN>"
+#   (token admina: FEEDBACK_ADMIN_TOKEN w .env.local albo zmienna CX_ADMIN_TOKEN)
 #   .\publish-release.ps1 -Version 1.2.32 -Source "D:\...\bin\Release" -Notes "Opis zmian"
 #   .\publish-release.ps1 -Version 1.2.32 -Source ".\paczka.zip"
 #
@@ -17,8 +17,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$token = $env:CX_ADMIN_TOKEN
-if (-not $token) { throw "Brak zmiennej CX_ADMIN_TOKEN (token admina)." }
+# Token admina: zmienna CX_ADMIN_TOKEN albo FEEDBACK_ADMIN_TOKEN z .env.local obok skryptu.
+# .env.local jest w .gitignore - token nigdy nie trafia do repo.
+function Read-EnvLocal([string] $key) {
+    $file = Join-Path $PSScriptRoot ".env.local"
+    if (-not (Test-Path $file)) { return $null }
+    foreach ($line in Get-Content $file) {
+        if ($line -match "^\s*$key\s*=\s*(.*)$") { return $matches[1].Trim().Trim('"') }
+    }
+    return $null
+}
+
+$token = if ($env:CX_ADMIN_TOKEN) { $env:CX_ADMIN_TOKEN } else { Read-EnvLocal "FEEDBACK_ADMIN_TOKEN" }
+if (-not $token) { throw "Brak tokenu admina: dopisz FEEDBACK_ADMIN_TOKEN=... do .env.local" }
 if ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw "Wersja musi miec postac x.y.z" }
 
 # --- Paczka ---
