@@ -198,9 +198,11 @@ function Invoke-Upload {
         return
     }
 
+    # GetNewClosure kopiuje tylko zmienne LOKALNE - $BaseUrl (skryptowa) musi byc skopiowana.
     $script = Join-Path $Root "publish-release.ps1"
+    $server = $BaseUrl
     $result = Invoke-SpectreCommandWithStatus -Title "Pakuję, wysyłam i weryfikuję SHA-256..." -Spinner Dots -Color $Accent -ScriptBlock {
-        & $script -Version $v -Source $src -Notes $notes -BaseUrl $BaseUrl -Quiet
+        & $script -Version $v -Source $src -Notes $notes -BaseUrl $server -Quiet
     }.GetNewClosure()
 
     $removed = if ($result.Removed.Count -gt 0) { "[yellow]$(Esc ($result.Removed -join ', '))[/]" } else { '[grey]nic[/]' }
