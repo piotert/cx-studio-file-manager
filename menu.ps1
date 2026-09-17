@@ -273,14 +273,168 @@ function Invoke-Download {
     )
 }
 
+# ---------------------------------------------------------------- dokumentacja
+
+# Dzieli markdown na sekcje po naglowkach "## ". Tekst przed pierwszym naglowkiem = wstep.
+function Get-DocSections([string] $text) {
+    $sections = [System.Collections.Generic.List[object]]::new()
+    $title = 'Wstęp'
+    $buf = [System.Text.StringBuilder]::new()
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^##\s+(.+)$') {
+            if ($buf.ToString().Trim()) { $sections.Add([pscustomobject]@{ Title = $title; Body = $buf.ToString() }) }
+            $title = $matches[1].Trim()
+            $buf = [System.Text.StringBuilder]::new()
+        }
+        [void]$buf.AppendLine($line)
+    }
+    if ($buf.ToString().Trim()) { $sections.Add([pscustomobject]@{ Title = $title; Body = $buf.ToString() }) }
+    return ,$sections
+}
+
+# Komorka tabeli markdown -> markup Spectre (`kod`, **pogrubienie**).
+function Convert-CellMarkup([string] $cell) {
+    $s = Esc $cell.Trim()
+    $s = [regex]::Replace($s, '\*\*(.+?)\*\*', '[bold]$1[/]')
+    $s = [regex]::Replace($s, '`([^`]+)`', '[olive]$1[/]')
+    if (-not $s) { $s = ' ' }
+    return $s
+}
+
+function Split-TableRow([string] $line) {
+    $t = $line.Trim()
+    if ($t.StartsWith('|')) { $t = $t.Substring(1) }
+    if ($t.EndsWith('|'))   { $t = $t.Substring(0, $t.Length - 1) }
+    return ,@($t -split '\|')
+}
+
+function Write-MarkdownTable([string[]] $lines) {
+    $headers = Split-TableRow $lines[0]
+    # unikalne, niepuste nazwy kolumn (pusta = spacje o roznej dlugosci)
+    $names = for ($i = 0; $i -lt $headers.Count; $i++) {
+        $h = Convert-CellMarkup $headers[$i]
+        if ($h -eq ' ') { ' ' * ($i + 1) } else { $h }
+    }
+    $rows = foreach ($line in ($lines | Select-Object -Skip 2)) {
+        $cells = Split-TableRow $line
+        $o = [ordered]@{}
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            $o[$names[$i]] = if ($i -lt $cells.Count) { Convert-CellMarkup $cells[$i] } else { ' ' }
+        }
+        [pscustomobject]$o
+    }
+    Format-SpectreTable -Data $rows -Color Grey -HeaderColor $Accent -AllowMarkup | Out-SpectreHost
+}
+
+# Markdown -> konsola, w calosci przez Spectre. Obslugiwany podzbior (wystarcza na docs/):
+# # / ## / ### naglowki, > cytat, listy - i 1. (z zagniezdzeniem), ``` bloki kodu,
+# tabele, **pogrubienie**, `kod`. Naglowek "## " pomijany - tytul sekcji daje Write-SpectreRule.
+function Show-MarkdownText([string] $md) {
+    $table = [System.Collections.Generic.List[string]]::new()
+    $code  = [System.Collections.Generic.List[string]]::new()
+    $inFence = $false
+    $prevBlank = $true
+
+    foreach ($line in ($md -split "`r?`n")) {
+        # --- blok kodu ---
+        if ($line -match '^\s*```') {
+            if ($inFence) {
+                Format-SpectrePanel -Data (Esc ($code -join "`n")) -Color Grey -Expand | Out-SpectreHost
+                $code.Clear()
+            }
+            $inFence = -not $inFence
+            continue
+        }
+        if ($inFence) { $code.Add($line); continue }
+
+        # --- tabela ---
+        if ($line -match '^\s*\|') { $table.Add($line); continue }
+        if ($table.Count) { Write-MarkdownTable $table.ToArray(); $table.Clear() }
+
+        # --- reszta, linia po linii ---
+        if (-not $line.Trim()) {
+            if (-not $prevBlank) { Write-SpectreHost "" }
+            $prevBlank = $true
+            continue
+        }
+        $prevBlank = $false
+
+        switch -Regex ($line) {
+            '^##\s' { $prevBlank = $true; break }
+            '^#\s+(.+)$' {
+                Write-SpectreHost "[bold underline $Accent]$(Convert-CellMarkup $matches[1])[/]"; break
+            }
+            '^###\s+(.+)$' {
+                Write-SpectreHost "[bold $Accent]$(Convert-CellMarkup $matches[1])[/]"; break
+            }
+            '^>\s?(.*)$' {
+                Write-SpectreHost "[grey]│[/] [italic]$(Convert-CellMarkup $matches[1])[/]"; break
+            }
+            '^(\s*)([-*]|\d+\.)\s+(.*)$' {
+                $indent = $matches[1]; $bullet = $matches[2]; $body = $matches[3]
+                $level  = [math]::Floor($indent.Length / 2)
+                $marker = if ($bullet -match '\d') { "[$Accent]$bullet[/]" } else { "[$Accent]•[/]" }
+                Write-SpectreHost ("  " * ($level + 1) + "$marker $(Convert-CellMarkup $body)"); break
+            }
+            default {
+                Write-SpectreHost ("  " + (Convert-CellMarkup $line))
+            }
+        }
+    }
+    if ($table.Count) { Write-MarkdownTable $table.ToArray() }
+    if ($inFence -and $code.Count) {
+        Format-SpectrePanel -Data (Esc ($code -join "`n")) -Color Grey -Expand | Out-SpectreHost
+    }
+}
+
+function Show-Docs {
+    $path = Join-Path $Root 'docs\RELEASES.md'
+    if (-not (Test-Path $path)) { throw "Brak pliku dokumentacji: $path" }
+    $text     = Get-Content $path -Raw -Encoding utf8
+    $sections = Get-DocSections $text
+
+    $all   = '[bold]Całość[/] [grey](przewiń terminal w górę)[/]'
+    $code  = 'Otwórz w VS Code'
+    $back  = '← Powrót do menu'
+
+    while ($true) {
+        $choices = @($all) + @($sections | ForEach-Object { Esc $_.Title }) + @($code, $back)
+        $pick = Read-SpectreSelection -Message "[bold]Dokumentacja[/] [grey]docs/RELEASES.md[/]" -Choices $choices -Color $Accent -PageSize 15
+
+        if ($pick -eq $back) { return }
+        if ($pick -eq $code) {
+            if (Get-Command code -ErrorAction SilentlyContinue) { code $path } else { Invoke-Item $path }
+            continue
+        }
+
+        Clear-Host
+        if ($pick -eq $all) {
+            foreach ($sec in $sections) {
+                Write-SpectreRule -Title "[bold]$(Esc $sec.Title)[/]" -Color $Accent -Alignment Left
+                Show-MarkdownText $sec.Body
+            }
+        } else {
+            $sec = $sections | Where-Object { (Esc $_.Title) -eq $pick } | Select-Object -First 1
+            Write-SpectreRule -Title "[bold]$(Esc $sec.Title)[/]" -Color $Accent -Alignment Left
+            Show-MarkdownText $sec.Body
+        }
+        Read-SpectrePause -Message "[grey]Enter - powrót do spisu treści[/]"
+        Clear-Host
+    }
+}
+
 # ---------------------------------------------------------------- petla glowna
 
 $menu = [ordered]@{
     'Wyświetl wersje na serwerze' = { Show-ReleasesTable (Get-ReleasesWithStatus) }
     'Załaduj nowy ZIP'            = { Invoke-Upload }
     'Pobierz wersję'              = { Invoke-Download }
+    'Dokumentacja'                = { Show-Docs }
     'Wyjście'                     = $null
 }
+
+# Akcje z wlasna nawigacja - bez pauzy po powrocie.
+$noPause = @('Dokumentacja')
 
 Clear-Host
 Write-SpectreFigletText -Text "CX Releases" -Color $Accent
@@ -293,14 +447,18 @@ while ($true) {
     if (-not $action) { break }
 
     Write-SpectreRule -Title "[bold]$choice[/]" -Color $Accent -Alignment Left
+    $failed = $false
     try {
         & $action
     }
     catch {
+        $failed = $true
         Format-SpectrePanel -Data "[red]$(Esc (Get-InnerMessage $_))[/]" -Header "[red]Błąd[/]" -Color Red -Expand |
             Out-SpectreHost
     }
-    Read-SpectrePause -Message "[grey]Enter - powrót do menu[/]"
+    if ($failed -or $choice -notin $noPause) {
+        Read-SpectrePause -Message "[grey]Enter - powrót do menu[/]"
+    }
     Clear-Host
     Write-SpectreRule -Title "[grey]CX Releases · $(Esc $BaseUrl)[/]" -Color $Accent
 }
