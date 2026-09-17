@@ -88,9 +88,12 @@ Serwer pobiera plik ze Storage, liczy SHA-256 i rozmiar, publikuje, przycina do 
 
 ## 5. Narzędzia (katalog repo serwera)
 
-**`menu.ps1`** – wyświetl wersje / załaduj ZIP / pobierz wersję.
-Tokeny bierze z `.env.local` (`UPLOAD_BEARER_TOKEN`, `FEEDBACK_ADMIN_TOKEN`).
-Pobieranie weryfikuje SHA-256 i rozmiar; uszkodzony plik jest usuwany.
+**`menu.ps1`** (`pwsh .\menu.ps1`, wymaga PowerShell 7 i modułu PwshSpectreConsole –
+doinstaluje się sam) – wyświetl wersje / załaduj ZIP / pobierz wersję.
+- Tokeny bierze z `.env.local` (`UPLOAD_BEARER_TOKEN`, `FEEDBACK_ADMIN_TOKEN`).
+- Przy ładowaniu pokazuje `FileVersion` z `SWAddIn_CX.dll` i ostrzega, gdy różni się
+  od publikowanego numeru – updater porównuje właśnie `FileVersion`.
+- Pobieranie weryfikuje SHA-256 i rozmiar; uszkodzony plik jest usuwany.
 
 **`publish-release.ps1`** – publikacja bez menu (np. ze skryptu builda):
 ```powershell
