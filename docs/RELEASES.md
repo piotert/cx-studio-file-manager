@@ -76,15 +76,33 @@ Serwer pobiera plik ze Storage, liczy SHA-256 i rozmiar, publikuje, przycina do 
 `200 { "version", "sha256", "sizeBytes", "removed": ["1.2.28"] }`.
 404 = pliku nie ma w Storage (upload nie doszedł).
 
+Opcjonalne ciało (od 21.09): `{ "promote": true, "mandatory": false }`.
+`promote: true` → po udanej publikacji `app_release` wskazuje tę wersję (`notes` z rekordu,
+`mandatory` z ciała). Odpowiedź dostaje wtedy `"promoted": true, "mandatory": bool`.
+Bez ciała zachowanie jak dotąd — istniejące skrypty publikacji nic nie zmieniają.
+Promocja idzie PRZED przycinaniem, więc retencja nigdy nie skasuje promowanej wersji.
+
+`mandatory: true` tylko dla wersji, bez której add-in nie może pracować (zmiana kontraktu
+z ePlano, poprawka bezpieczeństwa) — klient przerywa start SolidWorksa oknem pobierania
+i przypomina co 5 min. `false` = cicha informacja w feedzie, pobranie w tle. Nie ma stanu pośredniego.
+
+### `DELETE /api/releases/{version}` — kasowanie wydania (admin)
+Kasuje plik ze Storage i wiersz, dowolny status. Ten sam token co `DELETE /api/files/delete-all`.
+`204` skasowano · `404` nie ma · `409` wersja jest promowana (`app_release`) — najpierw promuj
+inną · `401` bez tokenu · `400` numer spoza `x.y.z[.w]`.
+Odmowa dla promowanej jest celowa: inaczej jedno żądanie zostawiłoby `/api/update`
+z paczką, której nie ma.
+
 ### `GET /api/update?version=x.y.z` – komunikat o aktualizacji (bez tokenu)
-```json
-{ "version": "1.2.31", "downloadUrl": "…", "notes": "…", "mandatory": true,
-  "sha256": null, "releasedAt": "…", "updateAvailable": true }
-```
-- `updateAvailable` = wersja z `app_release` nowsza niż `?version=`.
-- Bez `?version=` → `true`, gdy cokolwiek opublikowano.
-- `published = false` w tabeli → wszystkie pola `null`, `updateAvailable: false`.
-- Nieparsowalna wersja klienta → `false` (lepiej milczeć niż fałszywy alarm).
+Zwraca `{ version, downloadUrl, notes, mandatory, sha256, releasedAt, updateAvailable }`.
+`version` to `AssemblyVersion` add-inu w formacie `0.2.xxxx.xxxx` (cztery człony, dwa ostatnie
+z daty builda) — porównanie zawsze numeryczne, czteroczłonowe, nigdy leksykograficzne.
+
+Od 21.09 (S2/S4):
+- wersja z `app_release` **musi istnieć** w magazynie jako opublikowana; jeśli nie —
+  `updateAvailable: false`, HTTP 200, ostrzeżenie w logach (nie 500, nie stara wersja)
+- `sha256` z rekordu wydania (policzony z pliku przy `finalize`); brak → `null`, nie zmyślamy
+- `downloadUrl` zawsze `https://<host>/api/releases/<ver>/download` — nie wartość z bazy
 
 ## 5. Narzędzia (katalog repo serwera)
 
@@ -102,26 +120,19 @@ doinstaluje się sam) – wyświetl wersje / załaduj ZIP / pobierz wersję.
 Pakuje folder (albo bierze gotowy `.zip`), przechodzi kroki 1–3 i sprawdza,
 czy hash serwera zgadza się z lokalnym.
 
-## 6. Jak `/api/update` ma wskazywać na paczkę – krok ręczny
+## 6. Jak `/api/update` ma wskazywać na paczkę
 
-Po publikacji, w Supabase → SQL Editor (wartości z wyniku publikacji):
-```sql
-update public.app_release set
-  version      = '1.2.33',
-  download_url = 'https://cx.ptrnd.pl/api/releases/1.2.33/download',
-  sha256       = '<sha256 z wyniku publikacji>',
-  notes        = 'opis zmian',
-  mandatory    = false,
-  released_at  = now(),
-  published    = true
-where id = 1;
-```
-Konkretny numer w `download_url` zamiast `latest` – żeby komunikat i paczka nie
-rozjechały się, gdy opublikujesz kolejną wersję, a `app_release` zostanie po staremu.
+Od 21.09 przez `finalize` z `promote: true` (sekcja 4). Krok ręczny w SQL Editorze
+nie jest już potrzebny i jest niezalecany: pomija walidację, że wersja istnieje
+w magazynie, a `/api/update` i tak odpowie `updateAvailable: false`, jeśli nie istnieje.
 
-**Do zrobienia (świadomie odłożone):** automatyczna aktualizacja `app_release` przy
-`finalize` albo `/api/update` czytający bezpośrednio z `releases`. Do tego czasu
-krok ręczny jest jedynym źródłem rozjazdu – przy publikacji zawsze oba kroki.
+Zmiana samego `mandatory` bez nowej publikacji: `finalize` odmówi (409, już opublikowana) —
+na dziś SQL: `update public.app_release set mandatory = true where id = 1;`
+
+**Numeracja.** Publikuj pod `AssemblyVersion` add-inu (`0.2.xxxx.xxxx`). Wpisy w starej
+numeracji (`1.x.y`) mają wyższy pierwszy człon i retencja skasuje każdą `0.2.x` jako niższą
+w tej samej operacji, która ją publikuje — usuń je przez `DELETE /api/releases/<ver>`
+przed pierwszą publikacją `0.2.x`.
 
 ## 7. Add-in (`SWAddIn_CX`)
 
