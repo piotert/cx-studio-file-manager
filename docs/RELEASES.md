@@ -93,6 +93,14 @@ inną · `401` bez tokenu · `400` numer spoza `x.y.z[.w]`.
 Odmowa dla promowanej jest celowa: inaczej jedno żądanie zostawiłoby `/api/update`
 z paczką, której nie ma.
 
+### `POST /api/releases/{version}/promote` – promocja istniejącej wersji (admin)
+Ciało `{ "mandatory": bool }`. Ustawia `app_release` na JUŻ opublikowaną wersję – rollback do poprzedniej albo zmiana
+`mandatory` bez nowej publikacji. `200 { version, mandatory }` · `404` wersja nie jest opublikowana.
+
+### `PUT /api/releases/{version}/upload` – upload przez serwer (admin, zapas)
+Dla strony `/releases`, gdy przeglądarka nie może zrobić PUT prosto na signed URL. Twardy limit **4 MB**
+(Vercel ucina ciało funkcji na 4,5 MB) – większa paczka idzie signed URL-em albo skryptem. `204` · `413`.
+
 ### `GET /api/update?version=x.y.z` – komunikat o aktualizacji (bez tokenu)
 Zwraca `{ version, downloadUrl, notes, mandatory, sha256, releasedAt, updateAvailable }`.
 `version` to `AssemblyVersion` add-inu w formacie `0.2.xxxx.xxxx` (cztery człony, dwa ostatnie
@@ -106,11 +114,15 @@ Od 21.09 (S2/S4):
 
 ## 5. Narzędzia (katalog repo serwera)
 
+**Strona `/releases`** (od 21.09) – to samo z przeglądarki: lista z oznaczeniem aktualnej, publikacja ZIP-a
+(hash liczony lokalnie i porównany z serwerem), promocja, `mandatory`, kasowanie. Ten sam token
+administratora i ciasteczko co Zgłoszenia.
+
 **`menu.ps1`** (`pwsh .\menu.ps1`, wymaga PowerShell 7 i modułu PwshSpectreConsole –
 doinstaluje się sam) – wyświetl wersje / załaduj ZIP / pobierz wersję.
 - Tokeny bierze z `.env.local` (`UPLOAD_BEARER_TOKEN`, `FEEDBACK_ADMIN_TOKEN`).
-- Przy ładowaniu pokazuje `FileVersion` z `SWAddIn_CX.dll` i ostrzega, gdy różni się
-  od publikowanego numeru – updater porównuje właśnie `FileVersion`.
+- Przy ładowaniu podpowiada `AssemblyVersion` z `SWAddIn_CX.dll` (to wysyła klient w `?version=`) i ostrzega, gdy
+  publikowany numer się różni. Pyta o promocję i `mandatory` (od 21.09).
 - Pobieranie weryfikuje SHA-256 i rozmiar; uszkodzony plik jest usuwany.
 
 **`publish-release.ps1`** – publikacja bez menu (np. ze skryptu builda):

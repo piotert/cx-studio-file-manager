@@ -6,6 +6,7 @@ const TABS = [
   { label: 'File Manager', href: '/', match: (p: string) => p === '/' },
   { label: 'Tools', href: '/tools/fibonacci-sphere', match: (p: string) => p.startsWith('/tools') },
   { label: 'Zgłoszenia', href: '/feedback', match: (p: string) => p.startsWith('/feedback') },
+  { label: 'Wydania', href: '/releases', match: (p: string) => p.startsWith('/releases') },
 ]
 
 export default function NavBar() {
