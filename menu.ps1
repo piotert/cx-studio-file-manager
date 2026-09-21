@@ -131,13 +131,20 @@ function Get-SourceSummary([string] $src) {
         $dlls  = @($files | Where-Object Extension -eq '.dll')
         $main  = Join-Path $src 'SWAddIn_CX.dll'
         $fv    = if (Test-Path $main) { (Get-Item $main).VersionInfo.FileVersion } else { $null }
+        # AssemblyVersion - TO wysyla klient w /api/update?version= (0.2.xxxx.xxxx, dwa ostatnie
+        # czlony z daty builda). Pod tym numerem publikujemy. FileVersion moze byc inny.
+        $av = $null
+        if (Test-Path $main) {
+            try { $av = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $main).Path).Version.ToString() } catch { }
+        }
         return [pscustomobject]@{
-            Opis        = "folder: $($files.Count) plików, $($dlls.Count) DLL, $(Format-Size $bytes) przed spakowaniem"
-            FileVersion = $fv
+            Opis            = "folder: $($files.Count) plików, $($dlls.Count) DLL, $(Format-Size $bytes) przed spakowaniem"
+            FileVersion     = $fv
+            AssemblyVersion = $av
         }
     }
     if ($src -like '*.zip' -and (Test-Path $src -PathType Leaf)) {
-        return [pscustomobject]@{ Opis = "gotowy ZIP, $(Format-Size (Get-Item $src).Length)"; FileVersion = $null }
+        return [pscustomobject]@{ Opis = "gotowy ZIP, $(Format-Size (Get-Item $src).Length)"; FileVersion = $null; AssemblyVersion = $null }
     }
     return $null
 }
@@ -156,41 +163,57 @@ function Invoke-Upload {
     $summary = Get-SourceSummary $src
     if (-not $summary) { throw "Nie ma takiego folderu ani pliku .zip: $src" }
     Write-SpectreHost "[grey]$(Esc $summary.Opis)[/]"
-    if ($summary.FileVersion) {
+    if ($summary.AssemblyVersion) {
+        Write-SpectreHost "[grey]AssemblyVersion SWAddIn_CX.dll: [/][white bold]$(Esc $summary.AssemblyVersion)[/] [grey](to wysyła klient - pod tym publikujemy)[/]"
+    }
+    if ($summary.FileVersion -and $summary.FileVersion -ne $summary.AssemblyVersion) {
         Write-SpectreHost "[grey]FileVersion SWAddIn_CX.dll: [/][white]$(Esc $summary.FileVersion)[/]"
     }
+
+    # Podpowiedz: AssemblyVersion z DLL (numeracja klienta), a nie "nastepna po serwerze" -
+    # klient wysyla swoja AssemblyVersion i porownuje z tym, co zwroci /api/update (21.09).
+    if ($summary.AssemblyVersion) { $suggest = $summary.AssemblyVersion }
 
     do {
         $v = if ($suggest) {
             Read-SpectreText -Message "Wersja" -DefaultAnswer $suggest
         } else {
-            Read-SpectreText -Message "Wersja (x.y.z)"
+            Read-SpectreText -Message "Wersja (x.y.z.w)"
         }
         $v = $v.Trim()
         $ok = $v -match $VersionRegex
         if (-not $ok) { Write-SpectreHost "[red]Wersja musi mieć postać x.y.z albo x.y.z.w[/]" }
     } until ($ok)
 
-    # Updater porownuje FileVersion z pliku - rozjazd = aktualizacja w kolko albo wcale.
+    # Klient porownuje SWOJA AssemblyVersion z wersja z serwera - rozjazd = aktualizacja w kolko albo wcale.
+    $refVer = if ($summary.AssemblyVersion) { $summary.AssemblyVersion } else { $summary.FileVersion }
     $fv = $null
-    if ($summary.FileVersion -and [version]::TryParse((($summary.FileVersion -split '[ ,]')[0]), [ref]$fv)) {
+    if ($refVer -and [version]::TryParse((($refVer -split '[ ,]')[0]), [ref]$fv)) {
         $pv = [version]$v
         $norm = { param($x) [version]::new($x.Major, $x.Minor, [math]::Max($x.Build, 0), [math]::Max($x.Revision, 0)) }
         if ((& $norm $fv) -ne (& $norm $pv)) {
             Format-SpectrePanel -Color Orange1 -Expand -Header "[orange1]Uwaga[/]" -Data (
-                "FileVersion w DLL to [bold]$(Esc $summary.FileVersion)[/], a publikujesz jako [bold]$(Esc $v)[/].`n" +
-                "Updater porównuje FileVersion z pliku - po instalacji add-in będzie widział inną wersję niż serwer."
+                "Wersja w DLL to [bold]$(Esc $refVer)[/], a publikujesz jako [bold]$(Esc $v)[/].`n" +
+                "Klient wysyła wersję z DLL - po instalacji add-in będzie widział inną wersję niż serwer."
             ) | Out-SpectreHost
         }
     }
 
     $notes = Read-SpectreText -Message "Notatki [grey](Enter = brak)[/]" -AllowEmpty
 
+    # S6: promocja = /api/update wskazuje te wersje. Bez niej klienci nic nie zobacza.
+    $promote = Read-SpectreConfirm -Message "Ustawić jako aktualizację dla klientów (/api/update)?" -DefaultAnswer 'y'
+    $mandatory = $false
+    if ($promote) {
+        $mandatory = Read-SpectreConfirm -Message "[orange1]Obowiązkowa?[/] [grey](przerywa start SW oknem pobierania, przypomina co 5 min - tylko gdy bez tej wersji add-in nie działa)[/]" -DefaultAnswer 'n'
+    }
+
     Format-SpectreTable -Color $Accent -HideHeaders -Data @(
         [pscustomobject]@{ K = 'Wersja';  V = "[bold]$(Esc $v)[/]" }
         [pscustomobject]@{ K = 'Źródło';  V = Esc $src }
         [pscustomobject]@{ K = 'Notatki'; V = if ($notes) { Esc $notes } else { '[grey]-[/]' } }
         [pscustomobject]@{ K = 'Serwer';  V = Esc $BaseUrl }
+        [pscustomobject]@{ K = 'Promocja'; V = if ($promote) { if ($mandatory) { '[orange1 bold]TAK, obowiązkowa[/]' } else { '[green]tak[/]' } } else { '[grey]nie - /api/update bez zmian[/]' } }
     ) -AllowMarkup | Out-SpectreHost
 
     if (-not (Read-SpectreConfirm -Message "Publikować?" -DefaultAnswer 'n')) {
@@ -202,7 +225,7 @@ function Invoke-Upload {
     $script = Join-Path $Root "publish-release.ps1"
     $server = $BaseUrl
     $result = Invoke-SpectreCommandWithStatus -Title "Pakuję, wysyłam i weryfikuję SHA-256..." -Spinner Dots -Color $Accent -ScriptBlock {
-        & $script -Version $v -Source $src -Notes $notes -BaseUrl $server -Quiet
+        & $script -Version $v -Source $src -Notes $notes -BaseUrl $server -Promote:$promote -Mandatory:$mandatory -Quiet
     }.GetNewClosure()
 
     $removed = if ($result.Removed.Count -gt 0) { "[yellow]$(Esc ($result.Removed -join ', '))[/]" } else { '[grey]nic[/]' }
@@ -211,7 +234,11 @@ function Invoke-Upload {
         "SHA-256:  $($result.Sha256) [green](zgodny z lokalnym)[/]`n" +
         "Usunięte: $removed"
     )
-    Write-SpectreHost "[grey]/api/update nie zmienia się sam - przestaw app_release ręcznie (docs/RELEASES.md §6).[/]"
+    if ($result.Promoted) {
+        Write-SpectreHost "[green]/api/update wskazuje $(Esc $result.Version)$(if ($result.Mandatory) { ' [orange1 bold](obowiązkowa)[/]' }).[/]"
+    } else {
+        Write-SpectreHost "[grey]/api/update bez zmian - klienci nie zobaczą tej wersji, dopóki jej nie promujesz.[/]"
+    }
 }
 
 function Invoke-Download {

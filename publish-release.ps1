@@ -14,6 +14,12 @@ param(
     [Parameter(Mandatory)] [string] $Source,
     [string] $Notes = "",
     [string] $BaseUrl = "https://cx.ptrnd.pl",
+    # S6 (21.09): po publikacji ustaw app_release na te wersje -> /api/update ja wskazuje.
+    # Bez -Promote /api/update sie nie zmienia (jak dotad).
+    [switch] $Promote,
+    # Tylko z -Promote. TRUE = klient przerywa start SW oknem pobierania i przypomina co 5 min.
+    # Ustawiac wylacznie dla wersji, bez ktorej add-in nie moze pracowac.
+    [switch] $Mandatory,
     [switch] $Quiet
 )
 
@@ -83,9 +89,15 @@ try {
     }
     Say "Upload OK"
 
-    # --- 3. Finalizacja ---
+    # --- 3. Finalizacja (z promocja, gdy -Promote) ---
     $result = Invoke-Step "Finalizacja" {
-        Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/releases/$Version/finalize" -Headers $headers
+        if ($Promote) {
+            $fin = @{ promote = $true; mandatory = [bool]$Mandatory } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/releases/$Version/finalize" -Headers $headers `
+                -ContentType "application/json" -Body $fin
+        } else {
+            Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/releases/$Version/finalize" -Headers $headers
+        }
     }
 }
 finally {
@@ -104,11 +116,18 @@ if ($Quiet) {
         Sha256    = $result.sha256
         SizeBytes = [long]$result.sizeBytes
         Removed   = $removed
+        Promoted  = [bool]$result.promoted
+        Mandatory = [bool]$result.mandatory
         Source    = $Source
     }
 }
 
 Say "Opublikowano $($result.version), SHA-256 zgodny." "Green"
+if ($result.promoted) {
+    Say "/api/update wskazuje $($result.version) (mandatory: $($result.mandatory))." "Green"
+} else {
+    Say "/api/update NIE zmieniony (bez -Promote)." "Yellow"
+}
 if ($removed.Count -gt 0) {
     Say "Usuniete stare wersje: $($removed -join ', ')" "Yellow"
 }
