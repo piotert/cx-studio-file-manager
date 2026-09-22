@@ -130,21 +130,26 @@ function Get-SourceSummary([string] $src) {
         $bytes = ($files | Measure-Object Length -Sum).Sum
         $dlls  = @($files | Where-Object Extension -eq '.dll')
         $main  = Join-Path $src 'SWAddIn_CX.dll'
-        $fv    = if (Test-Path $main) { (Get-Item $main).VersionInfo.FileVersion } else { $null }
-        # AssemblyVersion - TO wysyla klient w /api/update?version= (0.2.xxxx.xxxx, dwa ostatnie
-        # czlony z daty builda). Pod tym numerem publikujemy. FileVersion moze byc inny.
+        # NUMER WYDANIA = AssemblyFileVersion - nasza zmienna, podbijana recznie przy kazdym
+        # wydaniu (decyzja 22.09). TO wysyla klient w /api/update?version= i pod tym publikujemy.
+        # Skladany z pol liczbowych jak w add-inie (AddinIdentity.ReadReleaseVersion):
+        # "0.3.0.00" wpisane w AssemblyInfo i tak da "0.3.0.0".
+        # AssemblyVersion jest zamrozona (tozsamosc DLL) - pokazujemy ja tylko informacyjnie.
+        $rv = $null
         $av = $null
         if (Test-Path $main) {
+            $vi = (Get-Item $main).VersionInfo
+            $rv = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
             try { $av = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $main).Path).Version.ToString() } catch { }
         }
         return [pscustomobject]@{
             Opis            = "folder: $($files.Count) plików, $($dlls.Count) DLL, $(Format-Size $bytes) przed spakowaniem"
-            FileVersion     = $fv
+            ReleaseVersion  = $rv
             AssemblyVersion = $av
         }
     }
     if ($src -like '*.zip' -and (Test-Path $src -PathType Leaf)) {
-        return [pscustomobject]@{ Opis = "gotowy ZIP, $(Format-Size (Get-Item $src).Length)"; FileVersion = $null; AssemblyVersion = $null }
+        return [pscustomobject]@{ Opis = "gotowy ZIP, $(Format-Size (Get-Item $src).Length)"; ReleaseVersion = $null; AssemblyVersion = $null }
     }
     return $null
 }
@@ -163,16 +168,15 @@ function Invoke-Upload {
     $summary = Get-SourceSummary $src
     if (-not $summary) { throw "Nie ma takiego folderu ani pliku .zip: $src" }
     Write-SpectreHost "[grey]$(Esc $summary.Opis)[/]"
-    if ($summary.AssemblyVersion) {
-        Write-SpectreHost "[grey]AssemblyVersion SWAddIn_CX.dll: [/][white bold]$(Esc $summary.AssemblyVersion)[/] [grey](to wysyła klient - pod tym publikujemy)[/]"
+    if ($summary.ReleaseVersion) {
+        Write-SpectreHost "[grey]Numer wydania SWAddIn_CX.dll (FileVersion): [/][white bold]$(Esc $summary.ReleaseVersion)[/] [grey](to wysyła klient - pod tym publikujemy)[/]"
     }
-    if ($summary.FileVersion -and $summary.FileVersion -ne $summary.AssemblyVersion) {
-        Write-SpectreHost "[grey]FileVersion SWAddIn_CX.dll: [/][white]$(Esc $summary.FileVersion)[/]"
+    if ($summary.AssemblyVersion) {
+        Write-SpectreHost "[grey]AssemblyVersion: $(Esc $summary.AssemblyVersion) (zamrożona tożsamość DLL - nie do publikacji)[/]"
     }
 
-    # Podpowiedz: AssemblyVersion z DLL (numeracja klienta), a nie "nastepna po serwerze" -
-    # klient wysyla swoja AssemblyVersion i porownuje z tym, co zwroci /api/update (21.09).
-    if ($summary.AssemblyVersion) { $suggest = $summary.AssemblyVersion }
+    # Podpowiedz: numer wydania z DLL (to wysyla klient), a nie "nastepna po serwerze" (22.09).
+    if ($summary.ReleaseVersion) { $suggest = $summary.ReleaseVersion }
 
     do {
         $v = if ($suggest) {
@@ -185,8 +189,8 @@ function Invoke-Upload {
         if (-not $ok) { Write-SpectreHost "[red]Wersja musi mieć postać x.y.z albo x.y.z.w[/]" }
     } until ($ok)
 
-    # Klient porownuje SWOJA AssemblyVersion z wersja z serwera - rozjazd = aktualizacja w kolko albo wcale.
-    $refVer = if ($summary.AssemblyVersion) { $summary.AssemblyVersion } else { $summary.FileVersion }
+    # Klient porownuje SWOJ numer wydania (FileVersion) z wersja z serwera - rozjazd = aktualizacja w kolko albo wcale.
+    $refVer = $summary.ReleaseVersion
     $fv = $null
     if ($refVer -and [version]::TryParse((($refVer -split '[ ,]')[0]), [ref]$fv)) {
         $pv = [version]$v
